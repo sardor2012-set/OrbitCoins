@@ -43,16 +43,10 @@ MINI_APP_URL = os.getenv(
     "https://orbitcoins.onrender.com",
 )
 
-# Timeweb Cloud requires verify-full SSL — the root CA cert must exist on
-# whatever host runs this app at ~/.cloud-certs/root.crt (same path used with
-# the psql/PGSSLROOTCERT setup). libpq (used by psycopg2) reads this path
-# directly, no extra Python-side SSL code is needed.
-_CLOUD_CERT_PATH = os.path.expanduser("~/.cloud-certs/root.crt")
-
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://gen_user:D7I_%7D%3CzmUm-%251%2C@d328436049a8aaf8dce3846c.twc1.net:5432/default_db"
-    f"?sslmode=verify-full&sslrootcert={_CLOUD_CERT_PATH}",
+    "?sslmode=require",
 )
 
 REQUIRED_CHANNELS = {
