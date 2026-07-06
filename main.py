@@ -2464,14 +2464,10 @@ def bitlabs_postback():
 
 @app.route("/api/cpa/postback/<int:task_id>")
 def cpa_postback(task_id):
-    user_id = request.args.get("user_id")
+    user_id_raw = request.args.get("user_id")
     token = request.args.get("token")
-    if not user_id or not token:
+    if not user_id_raw or not token:
         return "missing_params", 400
-    try:
-        user_id = int(user_id)
-    except (TypeError, ValueError):
-        return "invalid_user_id", 400
 
     try:
         conn = get_db()
@@ -2488,6 +2484,16 @@ def cpa_postback(task_id):
             cur.close()
             conn.close()
             return "invalid_token", 403
+
+        try:
+            user_id = int(user_id_raw)
+        except (TypeError, ValueError):
+            # Some networks send a literal placeholder (e.g. "TEST_SUBID")
+            # when test-firing the postback URL from their dashboard — treat
+            # it as a harmless no-op so their test succeeds, credit nobody.
+            cur.close()
+            conn.close()
+            return "1"
 
         cur.execute(
             """
@@ -3693,6 +3699,34 @@ def admin_delete_task(task_id):
         return jsonify({"ok": True})
     except Exception as e:
         logger.error("admin_delete_task error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/tasks/<int:task_id>/toggle-active", methods=["POST"])
+def admin_toggle_task_active(task_id):
+    data = request.json or {}
+    admin_id = data.get("admin_id")
+    err = require_admin_or_mod(admin_id)
+    if err:
+        return err
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "UPDATE tasks SET is_active = NOT is_active WHERE id = %s RETURNING is_active",
+            (task_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "not found"}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True, "is_active": row["is_active"]})
+    except Exception as e:
+        logger.error("admin_toggle_task_active error: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
