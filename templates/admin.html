@@ -2171,6 +2171,7 @@
                     <option value="subscription">Подписка</option>
                     <option value="screenshot">Задание</option>
                     <option value="other">Другое</option>
+                    <option value="cpa">CPA-партнёрка (Postback)</option>
                 </select>
             </div>
 
@@ -2221,6 +2222,11 @@
                     <label class="form-label"><i class="fa-solid fa-link" style="color:#00cec9"></i> Ссылка кнопки</label>
                     <input type="text" class="form-input" id="task-btn-url-input" placeholder="https://...">
                 </div>
+            </div>
+
+            <!-- CPA hint -->
+            <div id="task-cpa-hint" style="display:none;font-size:0.78em;color:#888;margin:-6px 0 12px;padding:10px;background:rgba(108,92,231,0.07);border-radius:10px;">
+                <i class="fa-solid fa-circle-info"></i> В ссылку кнопки можно добавить <b>{user_id}</b> — при показе пользователю он автоматически заменится на его ID (передайте этот параметр партнёрке как ваш sub/click ID). После создания задания появится готовая Postback-ссылка — вставьте её в настройках постбэка у партнёрки.
             </div>
 
             <div id="task-create-error" style="display:none;color:var(--danger);font-size:0.85em;font-weight:600;margin-bottom:10px;padding:10px;background:rgba(214,48,49,0.08);border-radius:10px;"></div>
@@ -3935,9 +3941,9 @@
             }
         }
 
-        const TASK_TYPE_LABELS = { video: 'Видео', subscription: 'Подписка', other: 'Другое', screenshot: 'Задание', ad_reward: 'Реклама (Reward)', ad_task: 'Задание (Adsgram)' };
-        const TASK_TYPE_COLORS = { video: '#e17055', subscription: '#0984e3', other: '#6c5ce7', screenshot: '#00b894', ad_reward: '#d63031', ad_task: '#6c5ce7' };
-        const TASK_TYPE_ICONS = { video: 'fa-play', subscription: 'fa-paper-plane', other: 'fa-arrow-up-right-from-square', screenshot: 'fa-camera', ad_reward: 'fa-tv', ad_task: 'fa-list-check' };
+        const TASK_TYPE_LABELS = { video: 'Видео', subscription: 'Подписка', other: 'Другое', screenshot: 'Задание', ad_reward: 'Реклама (Reward)', ad_task: 'Задание (Adsgram)', cpa: 'CPA-партнёрка' };
+        const TASK_TYPE_COLORS = { video: '#e17055', subscription: '#0984e3', other: '#6c5ce7', screenshot: '#00b894', ad_reward: '#d63031', ad_task: '#6c5ce7', cpa: '#00b894' };
+        const TASK_TYPE_ICONS = { video: 'fa-play', subscription: 'fa-paper-plane', other: 'fa-arrow-up-right-from-square', screenshot: 'fa-camera', ad_reward: 'fa-tv', ad_task: 'fa-list-check', cpa: 'fa-money-bill-transfer' };
         const TASK_FREQ_LABELS = { one_time: '🎯 Одиночное', daily: '🔄 Ежедневное' };
         const TASK_FREQ_COLORS = { one_time: '#6c5ce7', daily: '#00b894' };
 
@@ -3962,6 +3968,10 @@
                     detailHtml = `<div style="font-size:0.8em;color:#888;margin-top:4px;"><i class="fa-solid fa-rectangle-ad" style="margin-right:4px;color:#d63031;"></i>Block ID: <b>${escHtml(t.button_url)}</b></div>`;
                 } else if (t.task_type === 'ad_task' && t.button_url) {
                     detailHtml = `<div style="font-size:0.8em;color:#888;margin-top:4px;"><i class="fa-solid fa-list-check" style="margin-right:4px;color:#6c5ce7;"></i>Block ID: <b>${escHtml(t.button_url)}</b></div>`;
+                } else if (t.task_type === 'cpa') {
+                    const postbackUrl = `${window.location.origin}/api/cpa/postback/${t.id}?user_id=USER_ID_MACRO&token=${t.postback_token || ''}`;
+                    detailHtml = `<div style="font-size:0.8em;color:#888;margin-top:4px;"><i class="fa-solid fa-pen" style="margin-right:4px;"></i>${escHtml(t.button_text || '')} → <a href="${escHtml(t.button_url || '')}" target="_blank" style="color:#0984e3;text-decoration:none;">${escHtml(t.button_url || '')}</a></div>
+                    <div style="font-size:0.78em;color:#888;margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;"><i class="fa-solid fa-satellite-dish" style="color:#00b894;"></i> Postback: <code style="background:rgba(0,0,0,0.05);padding:2px 6px;border-radius:6px;word-break:break-all;">${escHtml(postbackUrl)}</code> <span class="odv odv-copy" style="color:#0984e3;cursor:pointer;font-weight:700;" onclick="copyOrderNick(this,'${postbackUrl.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">Копировать</span></div>`;
                 }
                 const photoHtml = t.photo_url
                     ? `<img src="${escHtml(t.photo_url)}" alt="photo" style="width:42px;height:42px;border-radius:10px;object-fit:cover;flex-shrink:0;">`
@@ -4027,7 +4037,8 @@
 
         function onTaskTypeChange(val) {
             document.getElementById('task-sub-fields').style.display = val === 'subscription' ? 'block' : 'none';
-            document.getElementById('task-other-fields').style.display = (val === 'other' || val === 'screenshot') ? 'block' : 'none';
+            document.getElementById('task-other-fields').style.display = (val === 'other' || val === 'screenshot' || val === 'cpa') ? 'block' : 'none';
+            document.getElementById('task-cpa-hint').style.display = val === 'cpa' ? 'block' : 'none';
             const btnGroups = document.querySelectorAll('#task-other-fields .form-group');
             if (val === 'screenshot' && btnGroups.length) {
                 btnGroups.forEach(g => {
@@ -4052,7 +4063,7 @@
             if (!name) { errEl.textContent = 'Введите имя задания.'; errEl.style.display = 'block'; return; }
             if (reward < 0) { errEl.textContent = 'Награда не может быть отрицательной.'; errEl.style.display = 'block'; return; }
             if (taskType === 'subscription' && !channelLink) { errEl.textContent = 'Укажите ссылку на канал.'; errEl.style.display = 'block'; return; }
-            if (taskType === 'other' && (!buttonText || !buttonUrl)) { errEl.textContent = 'Укажите текст и ссылку кнопки.'; errEl.style.display = 'block'; return; }
+            if ((taskType === 'other' || taskType === 'cpa') && (!buttonText || !buttonUrl)) { errEl.textContent = 'Укажите текст и ссылку кнопки.'; errEl.style.display = 'block'; return; }
 
             errEl.style.display = 'none';
             const btn = document.getElementById('task-create-btn');
@@ -4092,6 +4103,10 @@
                 closeAddTaskModal();
                 await loadAdminTasks();
                 showToast('Задание «' + name + '» создано!', 'success');
+                if (taskType === 'cpa' && d.task && d.task.postback_token) {
+                    const postbackUrl = `${window.location.origin}/api/cpa/postback/${d.task.id}?user_id=USER_ID_MACRO&token=${d.task.postback_token}`;
+                    prompt('Скопируйте Postback URL и вставьте у партнёрки.\nВместо USER_ID_MACRO подставьте их макрос для sub/click ID (subid, clickid и т.п.):', postbackUrl);
+                }
             } catch(e) {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-plus"></i> Добавить';
