@@ -1270,6 +1270,21 @@
             box-shadow: 0 3px 10px rgba(214,48,49,0.3);
         }
         .btn-promo-delete:hover { transform: scale(1.04); }
+        .btn-promo-toggle {
+            flex: 1;
+            padding: 8px 12px;
+            background: linear-gradient(135deg, #fdcb6e, #e17055);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.82em;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+            box-shadow: 0 3px 10px rgba(225,112,85,0.3);
+        }
+        .btn-promo-toggle:hover { transform: scale(1.04); }
 
         /* ===== ADD PROMO MODAL ===== */
         .category-chips {
@@ -3992,14 +4007,37 @@
                         <span class="promo-badge" style="background:rgba(108,92,231,0.1);color:var(--primary);border:1px solid rgba(108,92,231,0.2);"><i class="fa-solid fa-coins"></i> +${t.reward} монет</span>
                         <span class="promo-badge" style="background:rgba(0,0,0,0.05);color:${typeColor};border:1px solid rgba(0,0,0,0.08);"><i class="fa-solid ${typeIcon}"></i> ${typeLabel}</span>
                         ${(() => { const freq = t.task_frequency || 'one_time'; const fc = TASK_FREQ_COLORS[freq]||'#888'; const fl = TASK_FREQ_LABELS[freq]||freq; const rh = freq==='daily'?` · ${t.reset_hours||24}ч`:''; return `<span class="promo-badge" style="background:rgba(0,0,0,0.04);color:${fc};border:1px solid rgba(0,0,0,0.07);">${fl}${rh}</span>`; })()}
+                        ${t.is_active === false ? `<span class="promo-badge" style="background:rgba(214,48,49,0.1);color:var(--danger);border:1px solid rgba(214,48,49,0.2);"><i class="fa-solid fa-eye-slash"></i> Скрыто</span>` : ''}
                     </div>
                     <div class="promo-actions">
+                        <button class="btn-promo-toggle" onclick="toggleTaskActive(${t.id}, ${t.is_active !== false})">
+                            <i class="fa-solid ${t.is_active === false ? 'fa-eye' : 'fa-eye-slash'}"></i> ${t.is_active === false ? 'Показать' : 'Скрыть'}
+                        </button>
                         <button class="btn-promo-delete" onclick="openTaskDeleteModal(${t.id}, '${escHtml(t.name).replace(/'/g,"\\'")}')">
                             <i class="fa-solid fa-trash"></i> Удалить
                         </button>
                     </div>
                 </div>`;
             }).join('');
+        }
+
+        async function toggleTaskActive(taskId, currentlyActive) {
+            try {
+                const res = await fetch(`/api/admin/tasks/${taskId}/toggle-active`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ admin_id: Number(adminId) })
+                });
+                const d = await res.json();
+                if (!res.ok || !d.ok) {
+                    showToast('Не удалось изменить видимость задания.', 'error');
+                    return;
+                }
+                showToast(d.is_active ? 'Задание снова видно пользователям' : 'Задание скрыто от пользователей', 'success');
+                await loadAdminTasks();
+            } catch (e) {
+                showToast('Сетевая ошибка. Попробуйте снова.', 'error');
+            }
         }
 
         function onFreqChange(val) {
