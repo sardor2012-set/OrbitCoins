@@ -4681,6 +4681,27 @@
                     ></i>
                 </div>
 
+                <!-- BitLabs surveys -->
+                <div
+                    class="cpx-survey-banner"
+                    id="bitlabs-survey-banner"
+                    onclick="openBitlabsSurveys()"
+                    style="background: linear-gradient(135deg, #00b894, #55efc4)"
+                >
+                    <div class="cpx-survey-icon">
+                        <i class="fa-solid fa-list-check"></i>
+                    </div>
+                    <div class="cpx-survey-body">
+                        <div class="cpx-survey-title">Опросы BitLabs</div>
+                        <div class="cpx-survey-sub">
+                            Ещё больше опросов и заданий
+                        </div>
+                    </div>
+                    <i
+                        class="fa-solid fa-chevron-right cpx-survey-arrow"
+                    ></i>
+                </div>
+
                 <!-- Tasks List -->
                 <div id="products-container">
                     <div class="loading-spinner">
@@ -4816,6 +4837,26 @@
                 <iframe
                     class="cpx-modal-iframe"
                     id="cpx-modal-iframe"
+                    src=""
+                ></iframe>
+            </div>
+        </div>
+
+        <!-- ===== BITLABS SURVEYS MODAL ===== -->
+        <div class="modal-overlay" id="bitlabs-modal">
+            <div class="cpx-modal-box">
+                <div class="cpx-modal-header">
+                    <div class="modal-title" style="margin: 0">Опросы</div>
+                    <button
+                        class="cpx-modal-close"
+                        onclick="closeBitlabsSurveys()"
+                    >
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <iframe
+                    class="cpx-modal-iframe"
+                    id="bitlabs-modal-iframe"
                     src=""
                 ></iframe>
             </div>
@@ -6290,6 +6331,9 @@
                     isShop ? "block" : "none";
                 document.getElementById("cpx-survey-banner").style.display =
                     isShop ? "flex" : "none";
+                document.getElementById(
+                    "bitlabs-survey-banner",
+                ).style.display = isShop ? "flex" : "none";
                 document.getElementById("purchases-container").style.display =
                     isShop ? "none" : "block";
                 if (!isShop) {
@@ -7219,6 +7263,47 @@
                 .getElementById("cpx-modal")
                 .addEventListener("click", function (e) {
                     if (e.target === this) closeCpxSurveys();
+                });
+
+            // ===== BITLABS SURVEYS =====
+            async function openBitlabsSurveys() {
+                if (!userId) return;
+                try {
+                    const res = await fetch(
+                        "/api/bitlabs/iframe-url?user_id=" + userId,
+                    );
+                    const d = await res.json();
+                    if (d.is_blocked) {
+                        showBlockedScreen(d.block_reason || null);
+                        return;
+                    }
+                    if (!res.ok || !d.url) {
+                        showToast(
+                            "Опросы временно недоступны. Попробуйте позже.",
+                            "error",
+                        );
+                        return;
+                    }
+                    document.getElementById("bitlabs-modal-iframe").src = d.url;
+                    document
+                        .getElementById("bitlabs-modal")
+                        .classList.add("open");
+                } catch (e) {
+                    showToast("Ошибка соединения. Попробуйте снова.", "error");
+                }
+            }
+
+            function closeBitlabsSurveys() {
+                document
+                    .getElementById("bitlabs-modal")
+                    .classList.remove("open");
+                document.getElementById("bitlabs-modal-iframe").src = "";
+            }
+
+            document
+                .getElementById("bitlabs-modal")
+                .addEventListener("click", function (e) {
+                    if (e.target === this) closeBitlabsSurveys();
                 });
 
             function taskModalContinue() {
