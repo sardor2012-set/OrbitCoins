@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
 import random
@@ -93,6 +94,12 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "NodeLinkSupport")
 # be set via env var, never hardcoded, since it authorizes coin payouts.
 CPX_APP_ID = os.getenv("CPX_APP_ID", "34210")
 CPX_SECURE_HASH = os.getenv("CPX_SECURE_HASH", "")
+
+# ==================== BITLABS (survey/offer wall) ====================
+# BITLABS_APP_SECRET signs/verifies postback callbacks — must be set via env
+# var, never hardcoded, since it authorizes coin payouts.
+BITLABS_APP_TOKEN = os.getenv("BITLABS_APP_TOKEN", "")
+BITLABS_APP_SECRET = os.getenv("BITLABS_APP_SECRET", "")
 
 # ==================== EVENT CONFIG ====================
 MSK = timezone(timedelta(hours=3))
@@ -720,6 +727,17 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS bitlabs_transactions (
+            id SERIAL PRIMARY KEY,
+            tx_id TEXT UNIQUE NOT NULL,
+            user_id BIGINT NOT NULL,
+            amount NUMERIC(12,4) NOT NULL,
+            status TEXT NOT NULL DEFAULT 'credited',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
     # Remove legacy built-in ad tasks if they still exist
     cur.execute("DELETE FROM tasks WHERE id IN (901, 902)")
 
@@ -793,6 +811,7 @@ _BLOCK_PROTECTED_ROUTES = {
     "/api/premium/invoice/stars",
     "/api/premium/invoice/crypto",
     "/api/cpx/iframe-url",
+    "/api/bitlabs/iframe-url",
 }
 
 
@@ -2355,6 +2374,78 @@ def cpx_postback():
         return "1"
     except Exception as e:
         logger.error("cpx_postback error: %s", e)
+        return "error", 500
+
+
+# ==================== BITLABS (survey/offer wall) ====================
+
+
+@app.route("/api/bitlabs/iframe-url")
+def bitlabs_iframe_url():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "missing user_id"}), 400
+    if not BITLABS_APP_TOKEN:
+        return jsonify({"error": "bitlabs_not_configured"}), 503
+
+    params = {
+        "uid": user_id,
+        "token": BITLABS_APP_TOKEN,
+    }
+    url = "https://web.bitlabs.ai/?" + urlencode(params)
+    return jsonify({"url": url})
+
+
+@app.route("/api/bitlabs/postback")
+def bitlabs_postback():
+    """Server-to-server callback from BitLabs when a survey/offer is completed.
+    BitLabs appends &hash=<hex hmac-sha1 of the URL without &hash=...>,
+    signed with the app secret. Must return the raw string "1" on success."""
+    uid = request.args.get("uid")
+    tx_id = request.args.get("tx")
+    val = request.args.get("val")
+    received_hash = request.args.get("hash")
+
+    if not all([uid, tx_id, val, received_hash]):
+        return "missing_params", 400
+    if not BITLABS_APP_SECRET:
+        return "not_configured", 503
+
+    raw_url = f"https://{request.host}{request.path}?{request.query_string.decode()}"
+    signed_part = raw_url.rsplit(f"&hash={received_hash}", 1)[0]
+    expected_hash = hmac.new(
+        BITLABS_APP_SECRET.encode(), signed_part.encode(), hashlib.sha1
+    ).hexdigest()
+    if not hmac.compare_digest(received_hash, expected_hash):
+        logger.warning("BitLabs postback invalid hash: tx=%s", tx_id)
+        return "invalid_hash", 403
+
+    try:
+        amount = float(val)
+    except (TypeError, ValueError):
+        return "invalid_amount", 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM bitlabs_transactions WHERE tx_id = %s", (tx_id,))
+        existing = cur.fetchone()
+        if not existing and amount > 0:
+            cur.execute(
+                "INSERT INTO bitlabs_transactions (tx_id, user_id, amount, status) VALUES (%s, %s, %s, 'credited')",
+                (tx_id, uid, amount),
+            )
+            cur.execute(
+                "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
+                (amount, uid),
+            )
+            give_referral_bonus(cur, uid, amount)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return "1"
+    except Exception as e:
+        logger.error("bitlabs_postback error: %s", e)
         return "error", 500
 
 
