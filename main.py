@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import threading
 import time
 from datetime import datetime, timezone, timedelta
@@ -680,6 +681,7 @@ def init_db():
 
     cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT")
     cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS instruction TEXT")
+    cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS postback_token TEXT")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS task_completions (
@@ -2020,6 +2022,9 @@ def get_tasks():
         expired_task_ids = []
         for t in tasks:
             tid = t["id"]
+            if uid is not None and t.get("button_url"):
+                t["button_url"] = t["button_url"].replace("{user_id}", str(uid))
+            t.pop("postback_token", None)
             t["completed"] = False
             t["daily_completed"] = False
             t["reset_at"] = None
@@ -2446,6 +2451,66 @@ def bitlabs_postback():
         return "1"
     except Exception as e:
         logger.error("bitlabs_postback error: %s", e)
+        return "error", 500
+
+
+# ==================== GENERIC CPA TASK POSTBACK ====================
+# Used for one-off CPA/affiliate offers added via the admin panel as
+# task_type="cpa". Each such task gets its own postback_token, so the same
+# generic URL shape works for any network: whatever macro that network uses
+# for its click/sub id should be placed in the "user_id" param, and the
+# per-task secret in "token" — no per-network code needed.
+
+
+@app.route("/api/cpa/postback/<int:task_id>")
+def cpa_postback(task_id):
+    user_id = request.args.get("user_id")
+    token = request.args.get("token")
+    if not user_id or not token:
+        return "missing_params", 400
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return "invalid_user_id", 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT * FROM tasks WHERE id = %s AND task_type = 'cpa'", (task_id,)
+        )
+        task = cur.fetchone()
+        if not task or not task["postback_token"]:
+            cur.close()
+            conn.close()
+            return "task_not_found", 404
+        if not hmac.compare_digest(token, task["postback_token"]):
+            cur.close()
+            conn.close()
+            return "invalid_token", 403
+
+        cur.execute(
+            """
+            INSERT INTO task_completions (user_id, task_id, status, completed_at, reviewed_at)
+            VALUES (%s, %s, 'approved', NOW(), NOW())
+            ON CONFLICT (user_id, task_id) DO NOTHING
+            RETURNING id
+            """,
+            (user_id, task_id),
+        )
+        inserted = cur.fetchone()
+        if inserted:
+            cur.execute(
+                "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
+                (task["reward"], user_id),
+            )
+            give_referral_bonus(cur, user_id, task["reward"])
+        conn.commit()
+        cur.close()
+        conn.close()
+        return "1"
+    except Exception as e:
+        logger.error("cpa_postback error: %s", e)
         return "error", 500
 
 
@@ -3520,6 +3585,7 @@ def admin_create_task():
         "ad_reward",
         "ad_popup",
         "ad_task",
+        "cpa",
     ):
         return jsonify({"error": "invalid task_type"}), 400
     try:
@@ -3565,19 +3631,21 @@ def admin_create_task():
         except Exception as e:
             logger.error("admin_create_task subscription check error: %s", e)
             return jsonify({"error": "channel_check_failed"}), 500
-    if task_type == "other":
+    if task_type in ("other", "cpa"):
         if not button_text or not button_url:
             return jsonify(
                 {"error": "button_text and button_url are required for other tasks"}
             ), 400
+
+    postback_token = secrets.token_hex(12) if task_type == "cpa" else None
 
     try:
         conn = get_db()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             """
-            INSERT INTO tasks (name, photo_url, reward, task_type, video_url, channel_link, button_text, button_url, task_frequency, reset_hours, description, instruction)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO tasks (name, photo_url, reward, task_type, video_url, channel_link, button_text, button_url, task_frequency, reset_hours, description, instruction, postback_token)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -3593,6 +3661,7 @@ def admin_create_task():
                 reset_hours,
                 description,
                 instruction,
+                postback_token,
             ),
         )
         task = dict(cur.fetchone())
