@@ -40,7 +40,7 @@ _peak_online: int = 0
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8894186559:AAGyphyeXRSrwhKIXVm2uyMQa_ZLc9fdBnM")
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL",
-    "https://sardor2012-set-orbitcoins-7d69.twc1.net",
+    "https://orbitcoins.onrender.com",
 )
 
 # Timeweb Cloud requires verify-full SSL — the root CA cert must exist on
