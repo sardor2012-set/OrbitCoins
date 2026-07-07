@@ -42,7 +42,7 @@ _peak_online: int = 0
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8894186559:AAGyphyeXRSrwhKIXVm2uyMQa_ZLc9fdBnM")
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL",
-    "https://orbitcoins.onrender.com",
+    "https://sardor2012-set-orbitcoins-d1b2.twc1.net",
 )
 
 DATABASE_URL = os.getenv(
