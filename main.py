@@ -4078,6 +4078,7 @@ def fetch_richads_bot_ad(telegram_id: int, language_code: str = "ru") -> dict | 
         ads = resp.json()
         if isinstance(ads, list) and ads:
             return {"source": "richads", **ads[0]}
+        logger.info("fetch_richads_bot_ad: no fill, response=%s", ads)
     except Exception as e:
         logger.warning("fetch_richads_bot_ad error: %s", e)
     return None
@@ -4098,6 +4099,7 @@ def fetch_adsgram_bot_ad(telegram_id: int, language_code: str = "ru") -> dict | 
         data = resp.json()
         if data and data.get("image_url"):
             return {"source": "adsgram", **data}
+        logger.info("fetch_adsgram_bot_ad: no fill, response=%s", data)
     except Exception as e:
         logger.warning("fetch_adsgram_bot_ad error: %s", e)
     return None
@@ -5053,7 +5055,22 @@ async def callback_premium(callback: CallbackQuery):
     except Exception:
         pass
     await callback.message.answer(
-        '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji> OrbitCoins Plus временно недоступен. Обо всех новостях и запуске сервиса мы сообщим здесь: @OrbitCoins',
+        '<tg-emoji emoji-id="5188481279963715781">🚀</tg-emoji> <b><u>OrbitCoins Plus — окупи подписку всего за один вечер!</u>\n'
+        'Представь: подписка стоит всего 199 ₽ в месяц, а окупить её можно, пригласив всего 1 активного друга и даже выйти с него в огромный плюс. После этого всё, что ты заработаешь, — уже чистая прибыль. <tg-emoji emoji-id="5188481279963715781">🤑</tg-emoji>\n\n'
+        '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji> Что даёт OrbitCoins Plus?\n'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> 20% от заработка каждого реферала вместо 10%'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> +50% к награде за все задания'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Приоритетный вывод — заявки обрабатываются быстрее'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Плюс-звезда рядом с ником (видна в ивентах и списке друзей)'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Доступ в закрытый чат с администрацией OrbitCoins'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Полное отключение рекламы — ничего не отвлекает от заработка\n\n'
+        '<tg-emoji emoji-id="5438496463044752972">⭐️</tg-emoji> А теперь самое интересное:\n'
+        'В среднем активные пользователи зарабатывают около 3 500 ₽ в месяц.\n'
+        'Без Plus ты получаешь 10% от заработка реферала — это примерно 350+ ₽ с одного такого реферала.\n'
+        'С OrbitCoins Plus ты получаешь уже 20% — около 700+ ₽ с одного реферала. <tg-emoji emoji-id="5438496463044752972">🤯</tg-emoji>\n'
+        'Получается, что всего один активный реферал может принести тебе 700+ ₽, а подписка за 200 ₽ окупается практически сразу.\n\n'
+        '<tg-emoji emoji-id="5231449120635370684">💸</tg-emoji> Не упускай дополнительный заработок!\n'
+        'Подключай OrbitCoins Plus и получай максимум от каждого задания и каждого приглашённого друга. <tg-emoji emoji-id="5276032951342088188">💥</tg-emoji></b>',
         parse_mode="HTML",
         reply_markup=back_keyboard(),
     )
@@ -5270,7 +5287,22 @@ async def cmd_invite(message: Message, bot: Bot):
 
 async def cmd_premium(message: Message):
     await message.answer(
-        '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji> OrbitCoins Plus временно недоступен. Обо всех новостях и запуске сервиса мы сообщим здесь: @OrbitCoins',
+        '<tg-emoji emoji-id="5188481279963715781">🚀</tg-emoji> <b><u>OrbitCoins Plus — окупи подписку всего за один вечер!</u>\n'
+        'Представь: подписка стоит всего 199 ₽ в месяц, а окупить её можно, пригласив всего 1 активного друга и даже выйти с него в огромный плюс. После этого всё, что ты заработаешь, — уже чистая прибыль. <tg-emoji emoji-id="5188481279963715781">🤑</tg-emoji>\n\n'
+        '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji> Что даёт OrbitCoins Plus?\n'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> 20% от заработка каждого реферала вместо 10%'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> +50% к награде за все задания'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Приоритетный вывод — заявки обрабатываются быстрее'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Плюс-звезда рядом с ником (видна в ивентах и списке друзей)'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Доступ в закрытый чат с администрацией OrbitCoins'
+        '<tg-emoji emoji-id="5258354775757439405">➡️</tg-emoji> Полное отключение рекламы — ничего не отвлекает от заработка\n\n'
+        '<tg-emoji emoji-id="5438496463044752972">⭐️</tg-emoji> А теперь самое интересное:\n'
+        'В среднем активные пользователи зарабатывают около 3 500 ₽ в месяц.\n'
+        'Без Plus ты получаешь 10% от заработка реферала — это примерно 350+ ₽ с одного такого реферала.\n'
+        'С OrbitCoins Plus ты получаешь уже 20% — около 700+ ₽ с одного реферала. <tg-emoji emoji-id="5438496463044752972">🤯</tg-emoji>\n'
+        'Получается, что всего один активный реферал может принести тебе 700+ ₽, а подписка за 200 ₽ окупается практически сразу.\n\n'
+        '<tg-emoji emoji-id="5231449120635370684">💸</tg-emoji> Не упускай дополнительный заработок!\n'
+        'Подключай OrbitCoins Plus и получай максимум от каждого задания и каждого приглашённого друга. <tg-emoji emoji-id="5276032951342088188">💥</tg-emoji> </b>',
         parse_mode="HTML",
         reply_markup=premium_keyboard(),
     )
