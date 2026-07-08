@@ -3,7 +3,7 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>NodeLink</title>
+        <title>OrbitCoins</title>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,16 +15,9 @@
             src="https://kit.fontawesome.com/44e8c440b6.js"
             crossorigin="anonymous"
         ></script>
-        
-        <script src="https://richinfo.co/richpartners/telegram/js/tg-ob.js"></script>
-        <script>
-            window.TelegramAdsController = new TelegramAdsController();
-            window.TelegramAdsController.initialize({
-              pubId: "1016741",
-              appId: "8044",
-            });
-        </script>
         <script src="https://telegram.org/js/telegram-web-app.js?62"></script>
+        <script src="https://sad.adsgram.ai/js/sad.min.js"></script>
+        <script src="https://richinfo.co/richpartners/telegram/js/tg-ob.js"></script>
         <style>
             :root {
                 --primary-color: #6c5ce7;
@@ -4712,6 +4705,34 @@
                     ></i>
                 </div>
 
+                <!-- Rewarded video ad -->
+                <div
+                    class="cpx-survey-banner"
+                    id="watch-ad-banner"
+                    onclick="watchRewardedAd()"
+                    style="background: linear-gradient(135deg, #fd79a8, #fdcb6e)"
+                >
+                    <div class="cpx-survey-icon">
+                        <i class="fa-solid fa-tv"></i>
+                    </div>
+                    <div class="cpx-survey-body">
+                        <div class="cpx-survey-title">Смотреть рекламу</div>
+                        <div class="cpx-survey-sub">
+                            Короткое видео — и монеты на счету
+                        </div>
+                    </div>
+                    <i
+                        class="fa-solid fa-chevron-right cpx-survey-arrow"
+                    ></i>
+                </div>
+
+                <!-- AdsGram task-format ads -->
+                <adsgram-task
+                    data-block-id="task-37680"
+                    class="task"
+                    style="display: block; margin-bottom: 14px"
+                ></adsgram-task>
+
                 <!-- Tasks List -->
                 <div id="products-container">
                     <div class="loading-spinner">
@@ -6344,6 +6365,8 @@
                 document.getElementById(
                     "bitlabs-survey-banner",
                 ).style.display = isShop ? "flex" : "none";
+                document.getElementById("watch-ad-banner").style.display =
+                    isShop ? "flex" : "none";
                 document.getElementById("purchases-container").style.display =
                     isShop ? "none" : "block";
                 if (!isShop) {
@@ -6931,7 +6954,7 @@
                         const inCooldown = isDaily && t.daily_completed && t.reset_at;
                         const iconHtml = t.photo_url
                             ? `<img src="${escHtmlTask(t.photo_url)}" alt="icon" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,0.12);">`
-                            : `<div class="task-icon">${t.task_type === "video" ? "🎬" : t.task_type === "subscription" ? "📢" : t.task_type === "screenshot" ? "📸" : t.task_type === "ad_reward" ? "📺" : t.task_type === "ad_popup" ? "🎁" : t.task_type === "ad_task" ? "📋" : "🎁"}</div>`;
+                            : `<div class="task-icon">${t.task_type === "video" ? "🎬" : t.task_type === "subscription" ? "📢" : t.task_type === "screenshot" ? "📸" : t.task_type === "ad_reward" ? "📺" : t.task_type === "ad_popup" ? "🎁" : t.task_type === "ad_task" ? "📋" : t.task_type === "adsgram" ? "📺" : t.task_type === "richads" ? "📺" : "🎁"}</div>`;
                         const rewardHtml = `<div class="task-reward-badge">Награда: +${t.reward} <i class="fa-solid fa-coins" style="color:#c6892a;font-size:10px;"></i></div>`;
                         const freqBadge = isDaily
                             ? `<span class="task-freq-badge daily"><i class="fa-solid fa-rotate" style="font-size:9px;"></i> Ежедневное</span>`
@@ -6960,6 +6983,14 @@
                                     <i class="fa-solid fa-circle-check"></i> Проверить
                                 </button>
                             </div>`;
+                        } else if (t.task_type === "adsgram") {
+                            btnHtml = `<button class="task-btn" onclick="watchAdsgramTaskCard(${t.id}, '${escHtmlTask(t.button_url || "")}')">
+                                <i class="fa-solid fa-tv"></i> Смотреть
+                            </button>`;
+                        } else if (t.task_type === "richads") {
+                            btnHtml = `<button class="task-btn" onclick="watchRichadsTaskCard(${t.id})">
+                                <i class="fa-solid fa-tv"></i> Смотреть
+                            </button>`;
                         } else {
                             btnHtml = `<button class="task-btn" onclick="openTaskModal(${t.id})">
                                 <i class="fa-solid fa-check"></i> Выполнить
@@ -7315,6 +7346,204 @@
                 .addEventListener("click", function (e) {
                     if (e.target === this) closeBitlabsSurveys();
                 });
+
+            // ===== REWARDED / INTERSTITIAL ADS (RichAds -> AdsGram fallback) =====
+            let _adsgramRewardController = null;
+            let _adsgramInterstitialController = null;
+            let _richadsController = null;
+
+            function ensureAdControllers() {
+                if (!_adsgramRewardController && window.Adsgram) {
+                    try {
+                        _adsgramRewardController = window.Adsgram.init({
+                            blockId: "37678",
+                        });
+                    } catch (e) {
+                        console.warn("Adsgram reward init failed", e);
+                    }
+                }
+                if (!_adsgramInterstitialController && window.Adsgram) {
+                    try {
+                        _adsgramInterstitialController = window.Adsgram.init({
+                            blockId: "int-37679",
+                        });
+                    } catch (e) {
+                        console.warn("Adsgram interstitial init failed", e);
+                    }
+                }
+                if (!_richadsController && window.TelegramAdsController) {
+                    try {
+                        _richadsController = new window.TelegramAdsController();
+                        _richadsController.initialize({
+                            pubId: "792361",
+                            appId: "1396",
+                            debug: false,
+                        });
+                    } catch (e) {
+                        console.warn("RichAds init failed", e);
+                        _richadsController = null;
+                    }
+                }
+            }
+
+            async function watchRewardedAd() {
+                if (!userId) return;
+                ensureAdControllers();
+
+                if (_richadsController) {
+                    try {
+                        const nonceRes = await fetch("/api/ads/richads-nonce", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ user_id: userId }),
+                        });
+                        const nonceData = await nonceRes.json();
+                        if (nonceData.nonce) {
+                            await _richadsController.triggerInterstitialVideo();
+                            const claimRes = await fetch(
+                                "/api/ads/richads-claim",
+                                {
+                                    method: "POST",
+                                    headers: {
+                                        "Content-Type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                        user_id: userId,
+                                        nonce: nonceData.nonce,
+                                    }),
+                                },
+                            );
+                            const claimData = await claimRes.json();
+                            if (claimRes.ok && claimData.ok) {
+                                showToast(
+                                    "+" + claimData.reward + " монет за рекламу!",
+                                    "success",
+                                );
+                                loadUserData();
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        // RichAds: no fill / skipped / error -> fall back to AdsGram
+                    }
+                }
+
+                if (_adsgramRewardController) {
+                    try {
+                        await _adsgramRewardController.show();
+                        showToast(
+                            "Реклама просмотрена! Монеты начислятся через пару секунд.",
+                            "success",
+                        );
+                        setTimeout(loadUserData, 3000);
+                        return;
+                    } catch (e) {
+                        // user closed early / error
+                    }
+                }
+
+                showToast(
+                    "Реклама сейчас недоступна, попробуйте позже.",
+                    "error",
+                );
+            }
+
+            async function showPeriodicInterstitial() {
+                if (!userId || document.visibilityState !== "visible") return;
+                if (document.querySelector(".modal-overlay.open")) return;
+                ensureAdControllers();
+                try {
+                    if (_richadsController) {
+                        await _richadsController.triggerInterstitialVideo();
+                        return;
+                    }
+                } catch (e) {
+                    // fall through to AdsGram
+                }
+                if (_adsgramInterstitialController) {
+                    _adsgramInterstitialController.show().catch(() => {});
+                }
+            }
+
+            setInterval(showPeriodicInterstitial, 3 * 60 * 1000);
+
+            async function watchAdsgramTaskCard(taskId, blockId) {
+                if (!blockId || !window.Adsgram) {
+                    showToast(
+                        "Реклама сейчас недоступна, попробуйте позже.",
+                        "error",
+                    );
+                    return;
+                }
+                try {
+                    const controller = window.Adsgram.init({ blockId });
+                    await controller.show();
+                    showToast(
+                        "Реклама просмотрена! Монеты начислятся через пару секунд.",
+                        "success",
+                    );
+                    setTimeout(() => {
+                        loadUserData();
+                        loadTasks();
+                    }, 3000);
+                } catch (e) {
+                    showToast("Реклама не была досмотрена.", "error");
+                }
+            }
+
+            async function watchRichadsTaskCard(taskId) {
+                if (!userId) return;
+                ensureAdControllers();
+                if (!_richadsController) {
+                    showToast(
+                        "Реклама сейчас недоступна, попробуйте позже.",
+                        "error",
+                    );
+                    return;
+                }
+                try {
+                    const nonceRes = await fetch("/api/ads/richads-nonce", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            user_id: userId,
+                            task_id: taskId,
+                        }),
+                    });
+                    const nonceData = await nonceRes.json();
+                    if (!nonceData.nonce) throw new Error("no nonce");
+                    await _richadsController.triggerInterstitialVideo();
+                    const claimRes = await fetch("/api/ads/richads-claim", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            user_id: userId,
+                            nonce: nonceData.nonce,
+                            task_id: taskId,
+                        }),
+                    });
+                    const claimData = await claimRes.json();
+                    if (claimRes.ok && claimData.ok) {
+                        showToast(
+                            "+" + claimData.reward + " монет за рекламу!",
+                            "success",
+                        );
+                        loadUserData();
+                        loadTasks();
+                    } else {
+                        showToast("Не удалось начислить награду.", "error");
+                    }
+                } catch (e) {
+                    showToast("Реклама не была досмотрена.", "error");
+                }
+            }
+
+            const _adsgramTaskWidget = document.querySelector("adsgram-task");
+            if (_adsgramTaskWidget) {
+                _adsgramTaskWidget.addEventListener("reward", () => {
+                    setTimeout(loadUserData, 2000);
+                });
+            }
 
             function taskModalContinue() {
                 const task = allTasksData.find((t) => t.id === taskModalTaskId);
