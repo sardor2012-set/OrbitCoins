@@ -102,11 +102,29 @@ CPX_SECURE_HASH = os.getenv("CPX_SECURE_HASH", "")
 BITLABS_APP_TOKEN = os.getenv("BITLABS_APP_TOKEN", "")
 BITLABS_APP_SECRET = os.getenv("BITLABS_APP_SECRET", "")
 
-# ==================== ADSGRAM (rewarded ads in bot) ====================
+# ==================== ADSGRAM (rewarded ads in bot + Mini App) ====================
 # Unlike CPX/BitLabs/CPA tasks, ad views are repeatable — every valid
 # postback credits the reward again, there is no one-time completion record.
-ADSGRAM_BOT_TOKEN = os.getenv("ADSGRAM_BOT_TOKEN", "")
+ADSGRAM_BOT_TOKEN = os.getenv("ADSGRAM_BOT_TOKEN", "09babba8ca7b734331d57256")
 ADSGRAM_BOT_REWARD = float(os.getenv("ADSGRAM_BOT_REWARD", "1"))
+ADSGRAM_ACCOUNT_TOKEN = os.getenv("ADSGRAM_ACCOUNT_TOKEN", "c7fc229787c44e1a84d8bf4a34abb77e")
+ADSGRAM_BOT_BLOCK_ID = os.getenv("ADSGRAM_BOT_BLOCK_ID", "35421")
+ADSGRAM_MINIAPP_REWARD_BLOCK_ID = os.getenv("ADSGRAM_MINIAPP_REWARD_BLOCK_ID", "37678")
+ADSGRAM_MINIAPP_INTERSTITIAL_BLOCK_ID = os.getenv(
+    "ADSGRAM_MINIAPP_INTERSTITIAL_BLOCK_ID", "int-37679"
+)
+ADSGRAM_MINIAPP_TASK_BLOCK_ID = os.getenv(
+    "ADSGRAM_MINIAPP_TASK_BLOCK_ID", "task-37680"
+)
+
+# ==================== RICHADS (ads in bot + Mini App) ====================
+RICHADS_PUBLISHER_ID = os.getenv("RICHADS_PUBLISHER_ID", "792361")
+RICHADS_APP_ID = os.getenv("RICHADS_APP_ID", "1396")
+RICHADS_BOT_WIDGET_ID = os.getenv("RICHADS_BOT_WIDGET_ID", "401303")
+RICHADS_BOT_ENDPOINT = os.getenv(
+    "RICHADS_BOT_ENDPOINT", "http://15068.xml.adx1.com/telegram-mb"
+)
+AD_WATCH_REWARD = float(os.getenv("AD_WATCH_REWARD", "1"))
 
 # ==================== EVENT CONFIG ====================
 MSK = timezone(timedelta(hours=3))
@@ -745,6 +763,19 @@ def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
     """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ad_nonces (
+            id SERIAL PRIMARY KEY,
+            nonce TEXT UNIQUE NOT NULL,
+            user_id BIGINT NOT NULL,
+            used BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    cur.execute(
+        "ALTER TABLE ad_nonces ADD COLUMN IF NOT EXISTS task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE"
+    )
 
     # Remove legacy built-in ad tasks if they still exist
     cur.execute("DELETE FROM tasks WHERE id IN (901, 902)")
@@ -2479,7 +2510,8 @@ def cpa_postback(task_id):
         conn = get_db()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT * FROM tasks WHERE id = %s AND task_type = 'cpa'", (task_id,)
+            "SELECT * FROM tasks WHERE id = %s AND task_type IN ('cpa', 'adsgram')",
+            (task_id,),
         )
         task = cur.fetchone()
         if not task or not task["postback_token"]:
@@ -2559,6 +2591,108 @@ def adsgram_reward():
     except Exception as e:
         logger.error("adsgram_reward error: %s", e)
         return "error", 500
+
+
+# ==================== RICHADS (rewarded ads in Mini App) ====================
+# RichAds' Mini App SDK only reports success client-side (no server postback
+# like AdsGram), so a short-lived single-use nonce prevents the claim
+# endpoint from being called directly/repeatedly without the SDK flow.
+
+
+@app.route("/api/ads/richads-nonce", methods=["POST"])
+def richads_nonce():
+    data = request.json or {}
+    user_id = data.get("user_id")
+    task_id = data.get("task_id")
+    if not user_id:
+        return jsonify({"error": "missing user_id"}), 400
+    try:
+        user_id = int(user_id)
+        task_id = int(task_id) if task_id is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid user_id"}), 400
+
+    nonce = secrets.token_hex(16)
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        if task_id is not None:
+            cur.execute(
+                "SELECT 1 FROM tasks WHERE id = %s AND task_type = 'richads' AND is_active = TRUE",
+                (task_id,),
+            )
+            if not cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({"error": "task not found"}), 404
+        cur.execute(
+            "INSERT INTO ad_nonces (nonce, user_id, task_id) VALUES (%s, %s, %s)",
+            (nonce, user_id, task_id),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"nonce": nonce})
+    except Exception as e:
+        logger.error("richads_nonce error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ads/richads-claim", methods=["POST"])
+def richads_claim():
+    data = request.json or {}
+    user_id = data.get("user_id")
+    nonce = data.get("nonce")
+    if not user_id or not nonce:
+        return jsonify({"error": "missing fields"}), 400
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid user_id"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            UPDATE ad_nonces SET used = TRUE
+            WHERE nonce = %s AND user_id = %s AND used = FALSE
+              AND created_at > NOW() - INTERVAL '10 minutes'
+            RETURNING id, task_id
+            """,
+            (nonce, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "invalid_or_expired_nonce"}), 403
+
+        reward = AD_WATCH_REWARD
+        if row["task_id"] is not None:
+            cur.execute(
+                "SELECT reward FROM tasks WHERE id = %s AND task_type = 'richads'",
+                (row["task_id"],),
+            )
+            task = cur.fetchone()
+            if not task:
+                cur.close()
+                conn.close()
+                return jsonify({"error": "task not found"}), 404
+            reward = float(task["reward"])
+
+        cur.execute(
+            "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
+            (reward, user_id),
+        )
+        give_referral_bonus(cur, user_id, reward)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True, "reward": reward})
+    except Exception as e:
+        logger.error("richads_claim error: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 # ==================== ADMIN API ====================
@@ -3633,6 +3767,8 @@ def admin_create_task():
         "ad_popup",
         "ad_task",
         "cpa",
+        "adsgram",
+        "richads",
     ):
         return jsonify({"error": "invalid task_type"}), 400
     try:
@@ -3683,8 +3819,14 @@ def admin_create_task():
             return jsonify(
                 {"error": "button_text and button_url are required for other tasks"}
             ), 400
+    if task_type == "adsgram" and not button_url:
+        return jsonify(
+            {"error": "button_url (AdsGram Block ID) is required for adsgram tasks"}
+        ), 400
 
-    postback_token = secrets.token_hex(12) if task_type == "cpa" else None
+    postback_token = (
+        secrets.token_hex(12) if task_type in ("cpa", "adsgram") else None
+    )
 
     try:
         conn = get_db()
@@ -3920,6 +4062,124 @@ def build_subscribe_keyboard(not_subscribed: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def fetch_richads_bot_ad(telegram_id: int, language_code: str = "ru") -> dict | None:
+    try:
+        resp = http_requests.post(
+            RICHADS_BOT_ENDPOINT,
+            json={
+                "language_code": language_code,
+                "publisher_id": RICHADS_PUBLISHER_ID,
+                "widget_id": RICHADS_BOT_WIDGET_ID,
+                "telegram_id": str(telegram_id),
+                "production": True,
+            },
+            timeout=6,
+        )
+        ads = resp.json()
+        if isinstance(ads, list) and ads:
+            return {"source": "richads", **ads[0]}
+    except Exception as e:
+        logger.warning("fetch_richads_bot_ad error: %s", e)
+    return None
+
+
+def fetch_adsgram_bot_ad(telegram_id: int, language_code: str = "ru") -> dict | None:
+    try:
+        resp = http_requests.get(
+            "https://api.adsgram.ai/advbot",
+            params={
+                "tgid": telegram_id,
+                "blockid": ADSGRAM_BOT_BLOCK_ID,
+                "language": language_code,
+                "token": ADSGRAM_ACCOUNT_TOKEN,
+            },
+            timeout=6,
+        )
+        data = resp.json()
+        if data and data.get("image_url"):
+            return {"source": "adsgram", **data}
+    except Exception as e:
+        logger.warning("fetch_adsgram_bot_ad error: %s", e)
+    return None
+
+
+def fetch_bot_ad(telegram_id: int, language_code: str = "ru") -> dict | None:
+    """RichAds first, fall back to AdsGram if there's no fill or an error."""
+    return fetch_richads_bot_ad(telegram_id, language_code) or fetch_adsgram_bot_ad(
+        telegram_id, language_code
+    )
+
+
+async def callback_watch_ad(callback: CallbackQuery, bot: Bot):
+    await callback.answer()
+    chat_id = callback.message.chat.id
+    user_id = callback.from_user.id
+    lang = callback.from_user.language_code or "ru"
+    ad = await asyncio.to_thread(fetch_bot_ad, user_id, lang)
+    if not ad:
+        await bot.send_message(
+            chat_id, "Реклама сейчас недоступна, попробуйте позже."
+        )
+        return
+
+    try:
+        if ad["source"] == "richads":
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=ad.get("button") or "Перейти", url=ad["link"]
+                        )
+                    ]
+                ]
+            )
+            caption = f"<b>{ad.get('title', '')}</b>\n{ad.get('message', '')}".strip()
+            await bot.send_photo(
+                chat_id,
+                photo=ad["image"],
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+                protect_content=True,
+            )
+            notif_url = ad.get("notification_url")
+            if notif_url:
+                try:
+                    await asyncio.to_thread(http_requests.get, notif_url, timeout=5)
+                except Exception as e:
+                    logger.warning("richads notification_url error: %s", e)
+        else:
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=ad.get("button_name") or "Перейти",
+                            url=ad["click_url"],
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=ad.get("button_reward_name") or "Забрать награду",
+                            url=ad["reward_url"],
+                        )
+                    ],
+                ]
+            )
+            await bot.send_photo(
+                chat_id,
+                photo=ad["image_url"],
+                caption=ad.get("text_html", ""),
+                parse_mode="HTML",
+                reply_markup=kb,
+                protect_content=True,
+            )
+    except TelegramAPIError as e:
+        logger.warning("callback_watch_ad send error: %s", e)
+        await bot.send_message(
+            chat_id, "Не удалось показать рекламу, попробуйте позже."
+        )
+
+
 def build_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -3979,6 +4239,12 @@ def build_menu_keyboard() -> InlineKeyboardMarkup:
                     style="primary",
                     icon_custom_emoji_id="6028338546736107668",
                     callback_data="premium",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📺 Смотреть рекламу",
+                    callback_data="watch_ad",
                 )
             ],
         ]
@@ -5129,6 +5395,7 @@ async def run_bot():
     dp.callback_query.register(callback_buy_premium, F.data == "get_premium")
     dp.callback_query.register(callback_stars_pay, F.data == "telegram_stars_pay")
     dp.callback_query.register(callback_crypto_pay, F.data == "crypto_pay")
+    dp.callback_query.register(callback_watch_ad, F.data == "watch_ad")
     dp.pre_checkout_query.register(callback_pre_checkout)
     dp.message.register(callback_successful_payment, F.successful_payment)
     dp.message.register(handle_any_message)
