@@ -102,6 +102,12 @@ CPX_SECURE_HASH = os.getenv("CPX_SECURE_HASH", "")
 BITLABS_APP_TOKEN = os.getenv("BITLABS_APP_TOKEN", "")
 BITLABS_APP_SECRET = os.getenv("BITLABS_APP_SECRET", "")
 
+# ==================== ADSGRAM (rewarded ads in bot) ====================
+# Unlike CPX/BitLabs/CPA tasks, ad views are repeatable — every valid
+# postback credits the reward again, there is no one-time completion record.
+ADSGRAM_BOT_TOKEN = os.getenv("ADSGRAM_BOT_TOKEN", "")
+ADSGRAM_BOT_REWARD = float(os.getenv("ADSGRAM_BOT_REWARD", "1"))
+
 # ==================== EVENT CONFIG ====================
 MSK = timezone(timedelta(hours=3))
 EVENT_HOUR_MSK = 17  # 17:00 по МСК
@@ -2517,6 +2523,41 @@ def cpa_postback(task_id):
         return "1"
     except Exception as e:
         logger.error("cpa_postback error: %s", e)
+        return "error", 500
+
+
+# ==================== ADSGRAM (rewarded ads in bot) ====================
+
+
+@app.route("/api/adsgram/reward")
+def adsgram_reward():
+    user_id_raw = request.args.get("user_id")
+    token = request.args.get("token")
+    if not user_id_raw or not token:
+        return "missing_params", 400
+    if not ADSGRAM_BOT_TOKEN or not hmac.compare_digest(token, ADSGRAM_BOT_TOKEN):
+        return "invalid_token", 403
+
+    try:
+        user_id = int(user_id_raw)
+    except (TypeError, ValueError):
+        # Adsgram debug/test calls don't send a real Telegram ID — no-op.
+        return "OK"
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
+            (ADSGRAM_BOT_REWARD, user_id),
+        )
+        give_referral_bonus(cur, user_id, ADSGRAM_BOT_REWARD)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return "OK"
+    except Exception as e:
+        logger.error("adsgram_reward error: %s", e)
         return "error", 500
 
 
