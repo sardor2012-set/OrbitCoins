@@ -5201,7 +5201,7 @@ async def callback_buy_premium(callback: CallbackQuery):
         await callback.message.delete()
     except Exception:
         pass
-    await callback.message.answer_photo(
+    await callback.message.answer(
         caption='<tg-emoji emoji-id="5381975814415866082">👇</tg-emoji> <b>Выберите способ оплаты:</b>',
         parse_mode="HTML",
         reply_markup=premium_buy_keyboard(),
