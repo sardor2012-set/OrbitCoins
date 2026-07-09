@@ -127,6 +127,7 @@ RICHADS_BOT_ENDPOINT = os.getenv(
     "RICHADS_BOT_ENDPOINT", "http://15068.xml.adx1.com/telegram-mb"
 )
 AD_WATCH_REWARD = float(os.getenv("AD_WATCH_REWARD", "0.25"))
+AD_BROADCAST_HOURS_MSK = (13, 17)
 
 # ==================== EVENT CONFIG ====================
 MSK = timezone(timedelta(hours=3))
@@ -4206,74 +4207,120 @@ def fetch_bot_ad(telegram_id: int, language_code: str = "ru") -> dict | None:
     )
 
 
-async def callback_watch_ad(callback: CallbackQuery, bot: Bot):
-    await callback.answer()
-    chat_id = callback.message.chat.id
-    user_id = callback.from_user.id
-    lang = callback.from_user.language_code or "ru"
-    ad = await asyncio.to_thread(fetch_bot_ad, user_id, lang)
-    if not ad:
-        await bot.send_message(
-            chat_id, "Реклама сейчас недоступна, попробуйте позже."
-        )
-        return
-
+def send_bot_ad_message(chat_id, ad):
+    """Sync send of a fetched bot ad (RichAds or AdsGram) via the raw Bot
+    API — used by the scheduled broadcast, which runs in a background
+    thread outside the aiogram event loop."""
     try:
         if ad["source"] == "richads":
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=ad.get("button") or "Перейти", url=ad["link"]
-                        )
-                    ]
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": ad.get("button") or "Перейти", "url": ad["link"]}]
                 ]
-            )
-            caption = f"<b>{ad.get('title', '')}</b>\n{ad.get('message', '')}".strip()
-            await bot.send_photo(
-                chat_id,
-                photo=ad["image"],
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=kb,
-                protect_content=True,
+            }
+            caption = f"{ad.get('title', '')}\n{ad.get('message', '')}".strip()
+            http_requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                data={
+                    "chat_id": chat_id,
+                    "photo": ad["image"],
+                    "caption": caption,
+                    "protect_content": True,
+                    "reply_markup": json.dumps(reply_markup),
+                },
+                timeout=10,
             )
             notif_url = ad.get("notification_url")
             if notif_url:
                 try:
-                    await asyncio.to_thread(http_requests.get, notif_url, timeout=5)
+                    http_requests.get(notif_url, timeout=5)
                 except Exception as e:
                     logger.warning("richads notification_url error: %s", e)
         else:
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[
+            reply_markup = {
+                "inline_keyboard": [
                     [
-                        InlineKeyboardButton(
-                            text=ad.get("button_name") or "Перейти",
-                            url=ad["click_url"],
-                        )
+                        {
+                            "text": ad.get("button_name") or "Перейти",
+                            "url": ad["click_url"],
+                        }
                     ],
                     [
-                        InlineKeyboardButton(
-                            text=ad.get("button_reward_name") or "Забрать награду",
-                            url=ad["reward_url"],
-                        )
+                        {
+                            "text": ad.get("button_reward_name")
+                            or "Забрать награду",
+                            "url": ad["reward_url"],
+                        }
                     ],
                 ]
+            }
+            http_requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                data={
+                    "chat_id": chat_id,
+                    "photo": ad["image_url"],
+                    "caption": ad.get("text_html", ""),
+                    "parse_mode": "HTML",
+                    "protect_content": True,
+                    "reply_markup": json.dumps(reply_markup),
+                },
+                timeout=10,
             )
-            await bot.send_photo(
-                chat_id,
-                photo=ad["image_url"],
-                caption=ad.get("text_html", ""),
-                parse_mode="HTML",
-                reply_markup=kb,
-                protect_content=True,
-            )
-    except TelegramAPIError as e:
-        logger.warning("callback_watch_ad send error: %s", e)
-        await bot.send_message(
-            chat_id, "Не удалось показать рекламу, попробуйте позже."
+    except Exception as e:
+        logger.warning("send_bot_ad_message error: %s", e)
+
+
+def broadcast_ads_to_non_plus_users():
+    """Send a bot ad (RichAds -> AdsGram fallback) to every user without an
+    active OrbitCoins Plus subscription."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT telegram_id FROM users "
+            "WHERE status != 'Premium' OR premium_until IS NULL OR premium_until <= NOW()"
         )
+        users = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error("broadcast_ads_to_non_plus_users query error: %s", e)
+        return
+
+    logger.info("Ad broadcast: sending to %d non-Plus users", len(users))
+    for u in users:
+        try:
+            ad = fetch_bot_ad(u["telegram_id"])
+            if ad:
+                send_bot_ad_message(u["telegram_id"], ad)
+            time.sleep(0.05)
+        except Exception as e:
+            logger.warning("broadcast ad to %s failed: %s", u["telegram_id"], e)
+
+
+def ad_broadcast_loop():
+    """Background thread: send scheduled bot ads to non-Plus users at
+    13:00 and 17:00 MSK every day."""
+    sent_hours_today = set()
+    last_date = None
+    while True:
+        try:
+            now_msk = datetime.now(MSK)
+            if last_date != now_msk.date():
+                sent_hours_today = set()
+                last_date = now_msk.date()
+            if (
+                now_msk.hour in AD_BROADCAST_HOURS_MSK
+                and now_msk.hour not in sent_hours_today
+            ):
+                sent_hours_today.add(now_msk.hour)
+                logger.info(
+                    "Starting scheduled ad broadcast for %s:00 MSK", now_msk.hour
+                )
+                broadcast_ads_to_non_plus_users()
+        except Exception as e:
+            logger.error("ad_broadcast_loop error: %s", e)
+        time.sleep(60)
 
 
 def build_menu_keyboard() -> InlineKeyboardMarkup:
@@ -4335,12 +4382,6 @@ def build_menu_keyboard() -> InlineKeyboardMarkup:
                     style="primary",
                     icon_custom_emoji_id="6028338546736107668",
                     callback_data="premium",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📺 Смотреть рекламу",
-                    callback_data="watch_ad",
                 )
             ],
         ]
@@ -5011,7 +5052,7 @@ def premium_keyboard():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=" Оформить NodeLink PREMIUM",
+                    text=" Оформить OrbitCoins PLUS",
                     callback_data="get_premium",
                     icon_custom_emoji_id="5440841102871517055",
                     style="success",
@@ -5161,7 +5202,6 @@ async def callback_buy_premium(callback: CallbackQuery):
     except Exception:
         pass
     await callback.message.answer_photo(
-        photo=f"{MINI_APP_URL}/static/bankcard.png",
         caption='<tg-emoji emoji-id="5381975814415866082">👇</tg-emoji> <b>Выберите способ оплаты:</b>',
         parse_mode="HTML",
         reply_markup=premium_buy_keyboard(),
@@ -5518,7 +5558,6 @@ async def run_bot():
     )
     dp.callback_query.register(callback_stars_pay, F.data == "telegram_stars_pay")
     dp.callback_query.register(callback_crypto_pay, F.data == "crypto_pay")
-    dp.callback_query.register(callback_watch_ad, F.data == "watch_ad")
     dp.pre_checkout_query.register(callback_pre_checkout)
     dp.message.register(callback_successful_payment, F.successful_payment)
     dp.message.register(handle_any_message)
@@ -5542,6 +5581,11 @@ def main():
     event_thread = threading.Thread(target=event_loop, daemon=True)
     event_thread.start()
     logger.info("Weekly event loop thread started")
+
+    # Start scheduled ad broadcast thread (13:00 / 17:00 MSK, non-Plus users)
+    ad_broadcast_thread = threading.Thread(target=ad_broadcast_loop, daemon=True)
+    ad_broadcast_thread.start()
+    logger.info("Ad broadcast loop thread started")
 
     # Start Telegram bot
     asyncio.run(run_bot())
