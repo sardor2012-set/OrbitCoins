@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 import random
@@ -88,6 +89,7 @@ CRYPTO_PAY_API = "https://pay.crypt.bot/api"
 PREMIUM_PRICE_STARS = 69
 PREMIUM_PRICE_USDT = "1.30"
 PREMIUM_DAYS = 30
+PLUS_PRIVATE_CHAT_LINK = "https://t.me/+e5-t_djbtZM4ZTcy"
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "NodeLinkSupport")
 
 # ==================== CPX RESEARCH (survey offerwall) ====================
@@ -106,7 +108,7 @@ BITLABS_APP_SECRET = os.getenv("BITLABS_APP_SECRET", "")
 # Unlike CPX/BitLabs/CPA tasks, ad views are repeatable — every valid
 # postback credits the reward again, there is no one-time completion record.
 ADSGRAM_BOT_TOKEN = os.getenv("ADSGRAM_BOT_TOKEN", "09babba8ca7b734331d57256")
-ADSGRAM_BOT_REWARD = float(os.getenv("ADSGRAM_BOT_REWARD", "1"))
+ADSGRAM_BOT_REWARD = float(os.getenv("ADSGRAM_BOT_REWARD", "0.25"))
 ADSGRAM_ACCOUNT_TOKEN = os.getenv("ADSGRAM_ACCOUNT_TOKEN", "fce898c37bab41c59ff42e567a6cf777")
 ADSGRAM_BOT_BLOCK_ID = os.getenv("ADSGRAM_BOT_BLOCK_ID", "35421")
 ADSGRAM_MINIAPP_REWARD_BLOCK_ID = os.getenv("ADSGRAM_MINIAPP_REWARD_BLOCK_ID", "37678")
@@ -124,7 +126,7 @@ RICHADS_BOT_WIDGET_ID = os.getenv("RICHADS_BOT_WIDGET_ID", "401303")
 RICHADS_BOT_ENDPOINT = os.getenv(
     "RICHADS_BOT_ENDPOINT", "http://15068.xml.adx1.com/telegram-mb"
 )
-AD_WATCH_REWARD = float(os.getenv("AD_WATCH_REWARD", "1"))
+AD_WATCH_REWARD = float(os.getenv("AD_WATCH_REWARD", "0.25"))
 
 # ==================== EVENT CONFIG ====================
 MSK = timezone(timedelta(hours=3))
@@ -706,6 +708,7 @@ def init_db():
     cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT")
     cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS instruction TEXT")
     cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS postback_token TEXT")
+    cur.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plus_reward REAL")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS task_completions (
@@ -813,7 +816,8 @@ def init_db():
 
 
 def give_referral_bonus(cur, invitee_id: int, coins_earned):
-    """Give 10% of coins_earned to the inviter of invitee_id, if any."""
+    """Give 10% of coins_earned to the inviter of invitee_id (20% if the
+    inviter has an active OrbitCoins Plus subscription), if any."""
     try:
         cur.execute(
             "SELECT inviter_id FROM referrals WHERE invitee_id = %s LIMIT 1",
@@ -823,7 +827,19 @@ def give_referral_bonus(cur, invitee_id: int, coins_earned):
         if not row:
             return
         inviter_id = row["inviter_id"]
-        bonus = round(float(coins_earned) * 0.10, 2)
+        cur.execute(
+            "SELECT status, premium_until FROM users WHERE telegram_id = %s",
+            (inviter_id,),
+        )
+        inviter = cur.fetchone()
+        is_plus = bool(
+            inviter
+            and inviter["status"] == "Premium"
+            and inviter["premium_until"]
+            and inviter["premium_until"] > datetime.now(timezone.utc)
+        )
+        rate = 0.20 if is_plus else 0.10
+        bonus = round(float(coins_earned) * rate, 2)
         if bonus <= 0:
             return
         cur.execute(
@@ -836,6 +852,59 @@ def give_referral_bonus(cur, invitee_id: int, coins_earned):
         )
     except Exception as e:
         logger.warning("give_referral_bonus error: %s", e)
+
+
+def send_telegram_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
+    """Send a message via the raw Bot API — usable from sync Flask routes
+    that don't have access to the aiogram Bot instance (which only runs
+    inside the async bot polling loop)."""
+    try:
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+        if reply_markup is not None:
+            payload["reply_markup"] = json.dumps(reply_markup)
+        http_requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data=payload,
+            timeout=10,
+        )
+    except Exception as e:
+        logger.warning("send_telegram_message error: %s", e)
+
+
+def send_plus_thankyou(chat_id):
+    """Thank the user for buying OrbitCoins Plus and invite them to the
+    private chat for subscribers."""
+    text = (
+        '<tg-emoji emoji-id="5235711785482341993">🎉</tg-emoji> <b>Спасибо за покупку OrbitCoins Plus!</b>\n\n'
+        "Теперь тебе доступны все привилегии подписки. Заходи в закрытый чат для наших Plus-подписчиков — там самые свежие новости и бонусы."
+    )
+    reply_markup = {
+        "inline_keyboard": [
+            [{"text": "💎 Закрытый чат Plus", "url": PLUS_PRIVATE_CHAT_LINK}]
+        ]
+    }
+    send_telegram_message(chat_id, text, reply_markup=reply_markup)
+
+
+def resolve_task_reward(cur, task, user_id) -> float:
+    """Return the reward to credit for completing `task`: its plus_reward
+    if the user has an active OrbitCoins Plus subscription and plus_reward
+    is set on the task, otherwise the regular reward."""
+    plus_reward = task.get("plus_reward")
+    if plus_reward is None:
+        return float(task["reward"])
+    cur.execute(
+        "SELECT status, premium_until FROM users WHERE telegram_id = %s",
+        (user_id,),
+    )
+    user = cur.fetchone()
+    is_plus = bool(
+        user
+        and user["status"] == "Premium"
+        and user["premium_until"]
+        and user["premium_until"] > datetime.now(timezone.utc)
+    )
+    return float(plus_reward) if is_plus else float(task["reward"])
 
 
 # ==================== FLASK API ====================
@@ -1156,7 +1225,7 @@ def purchase():
 WITHDRAW_RATE = 1  # 1 монета = 1 рубль
 WITHDRAW_COMMISSION_PCT = 5  # комиссия за вывод, %
 WITHDRAW_MIN_COINS = 1000
-WITHDRAW_METHODS = {"holyworld", "sbp", "tinkoff", "sberbank", "qiwi"}
+WITHDRAW_METHODS = {"holyworld", "card", "sbp", "tinkoff", "sberbank", "qiwi"}
 
 
 @app.route("/api/withdraw", methods=["POST"])
@@ -1498,12 +1567,13 @@ def admin_orders():
                        w.method, w.details, w.amount_coins, w.amount_rub,
                        w.user_id,
                        u.first_name, u.username, u.nick, u.status AS user_status,
+                       (u.status = 'Premium' AND u.premium_until > NOW()) AS user_is_plus,
                        m.name AS completed_by_name
                 FROM withdrawals w
                 JOIN users u ON w.user_id = u.telegram_id
                 LEFT JOIN moderators m ON w.processed_by = m.telegram_id
                 WHERE w.status = %s AND w.processed_by = %s
-                ORDER BY w.created_at DESC
+                ORDER BY user_is_plus DESC NULLS LAST, w.created_at DESC
                 """,
                 (status_filter, int(moderator_id)),
             )
@@ -1514,12 +1584,13 @@ def admin_orders():
                        w.method, w.details, w.amount_coins, w.amount_rub,
                        w.user_id,
                        u.first_name, u.username, u.nick, u.status AS user_status,
+                       (u.status = 'Premium' AND u.premium_until > NOW()) AS user_is_plus,
                        m.name AS completed_by_name
                 FROM withdrawals w
                 JOIN users u ON w.user_id = u.telegram_id
                 LEFT JOIN moderators m ON w.processed_by = m.telegram_id
                 WHERE w.status = %s
-                ORDER BY w.created_at DESC
+                ORDER BY user_is_plus DESC NULLS LAST, w.created_at DESC
                 """,
                 (status_filter,),
             )
@@ -1886,6 +1957,7 @@ def activate_premium():
             f"Ваш статус обновлён до <b>Premium</b> на {PREMIUM_DAYS} дней.\n"
             f"Наслаждайтесь всеми привилегиями! 🎉",
         )
+        send_plus_thankyou(user_id)
         return jsonify({"ok": True})
     except Exception as e:
         logger.error("activate_premium error: %s", e)
@@ -1923,6 +1995,7 @@ def crypto_pay_webhook():
                         f"Ваш статус обновлён до <b>Premium</b> на {PREMIUM_DAYS} дней.\n"
                         f"Наслаждайтесь всеми привилегиями! 🎉",
                     )
+                    send_plus_thankyou(user_id)
                     logger.info("Premium activated via CryptoPay for user %s", user_id)
                 except Exception as e:
                     logger.error("crypto webhook activate error: %s", e)
@@ -1952,7 +2025,8 @@ def get_current_event():
 
         # Top-3 leaderboard for current event
         cur.execute("""
-            SELECT telegram_id, username, first_name, nick, event_referral_count
+            SELECT telegram_id, username, first_name, nick, event_referral_count,
+                   (status = 'Premium' AND premium_until > NOW()) AS is_plus
             FROM users
             WHERE event_referral_count > 0
             ORDER BY event_referral_count DESC
@@ -2151,15 +2225,16 @@ def check_subscription():
             "INSERT INTO task_completions (user_id, task_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
             (user_id, task_id),
         )
+        earned = resolve_task_reward(cur, task, user_id)
         cur.execute(
             "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
-            (task["reward"], user_id),
+            (earned, user_id),
         )
-        give_referral_bonus(cur, user_id, task["reward"])
+        give_referral_bonus(cur, user_id, earned)
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({"ok": True, "reward": task["reward"]})
+        return jsonify({"ok": True, "reward": earned})
     except Exception as e:
         logger.error("check_subscription error: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -2544,11 +2619,12 @@ def cpa_postback(task_id):
         )
         inserted = cur.fetchone()
         if inserted:
+            earned = resolve_task_reward(cur, task, user_id)
             cur.execute(
                 "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
-                (task["reward"], user_id),
+                (earned, user_id),
             )
-            give_referral_bonus(cur, user_id, task["reward"])
+            give_referral_bonus(cur, user_id, earned)
         conn.commit()
         cur.close()
         conn.close()
@@ -2671,7 +2747,7 @@ def richads_claim():
         reward = AD_WATCH_REWARD
         if row["task_id"] is not None:
             cur.execute(
-                "SELECT reward FROM tasks WHERE id = %s AND task_type = 'richads'",
+                "SELECT reward, plus_reward FROM tasks WHERE id = %s AND task_type = 'richads'",
                 (row["task_id"],),
             )
             task = cur.fetchone()
@@ -2679,7 +2755,7 @@ def richads_claim():
                 cur.close()
                 conn.close()
                 return jsonify({"error": "task not found"}), 404
-            reward = float(task["reward"])
+            reward = resolve_task_reward(cur, task, user_id)
 
         cur.execute(
             "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
@@ -3739,6 +3815,7 @@ def admin_create_task():
     name = (data.get("name") or "").strip()
     photo_url = (data.get("photo_url") or "").strip() or None
     reward = data.get("reward", 0)
+    plus_reward = data.get("plus_reward")
     task_type = (data.get("task_type") or "other").strip()
     video_url = (data.get("video_url") or "").strip() or None
     channel_link = (data.get("channel_link") or "").strip() or None
@@ -3777,6 +3854,12 @@ def admin_create_task():
             reward = 0
     except (TypeError, ValueError):
         reward = 0
+    try:
+        plus_reward = float(plus_reward) if plus_reward not in (None, "") else None
+        if plus_reward is not None and plus_reward < 0:
+            plus_reward = None
+    except (TypeError, ValueError):
+        plus_reward = None
 
     if task_type == "video" and not video_url:
         return jsonify({"error": "video_url is required for video tasks"}), 400
@@ -3833,14 +3916,15 @@ def admin_create_task():
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             """
-            INSERT INTO tasks (name, photo_url, reward, task_type, video_url, channel_link, button_text, button_url, task_frequency, reset_hours, description, instruction, postback_token)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO tasks (name, photo_url, reward, plus_reward, task_type, video_url, channel_link, button_text, button_url, task_frequency, reset_hours, description, instruction, postback_token)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
                 name,
                 photo_url,
                 reward,
+                plus_reward,
                 task_type,
                 video_url,
                 channel_link,
@@ -3926,13 +4010,14 @@ def admin_list_task_completions():
         cur.execute(
             """
             SELECT tc.id, tc.user_id, tc.task_id, tc.status, tc.completed_at, tc.reviewed_at, tc.proof_url,
-                   t.name AS task_name, t.description, t.instruction, t.reward, t.photo_url, t.task_type,
-                   u.username, u.first_name
+                   t.name AS task_name, t.description, t.instruction, t.reward, t.plus_reward, t.photo_url, t.task_type,
+                   u.username, u.first_name, u.nick,
+                   (u.status = 'Premium' AND u.premium_until > NOW()) AS user_is_plus
             FROM task_completions tc
             JOIN tasks t ON t.id = tc.task_id
             LEFT JOIN users u ON u.telegram_id = tc.user_id
             WHERE tc.status = %s
-            ORDER BY tc.completed_at ASC
+            ORDER BY user_is_plus DESC NULLS LAST, tc.completed_at ASC
             """,
             (status,),
         )
@@ -3962,7 +4047,7 @@ def admin_approve_task_completion(completion_id):
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             """
-            SELECT tc.*, t.reward FROM task_completions tc
+            SELECT tc.*, t.reward, t.plus_reward FROM task_completions tc
             JOIN tasks t ON t.id = tc.task_id
             WHERE tc.id = %s
             """,
@@ -3981,11 +4066,12 @@ def admin_approve_task_completion(completion_id):
             "UPDATE task_completions SET status = 'approved', reviewed_at = NOW(), reviewed_by = %s WHERE id = %s",
             (admin_id, completion_id),
         )
+        earned = resolve_task_reward(cur, row, row["user_id"])
         cur.execute(
             "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
-            (row["reward"], row["user_id"]),
+            (earned, row["user_id"]),
         )
-        give_referral_bonus(cur, row["user_id"], row["reward"])
+        give_referral_bonus(cur, row["user_id"], earned)
         conn.commit()
         cur.close()
         conn.close()
@@ -4735,6 +4821,7 @@ async def callback_successful_payment(message: Message):
                 f'Наслаждайтесь всеми привилегиями! <tg-emoji emoji-id="5235711785482341993">🎉</tg-emoji>',
                 parse_mode="HTML",
             )
+            send_plus_thankyou(user.id)
         except Exception as e:
             logger.error("callback_successful_payment error: %s", e)
 
@@ -4946,27 +5033,10 @@ def premium_buy_keyboard():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=" Telegram Stars",
-                    callback_data="telegram_stars_pay",
-                    icon_custom_emoji_id="5438496463044752972",
-                    style="success",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=" CryptoPay",
-                    callback_data="crypto_pay",
-                    icon_custom_emoji_id="5361543877599724417",
-                    style="primary",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=" Ручная оплата",
-                    url="https://t.me/s_narzimurodov",
-                    callback_data="admin_pay",
+                    text=" Банковской картой",
+                    callback_data="premium_card_pay",
                     icon_custom_emoji_id="5445353829304387411",
-                    style="danger",
+                    style="success",
                 )
             ],
             [
@@ -5076,7 +5146,7 @@ async def callback_premium(callback: CallbackQuery):
         'В среднем активные пользователи зарабатывают около 3 500 ₽ в месяц.\n'
         'Без Plus ты получаешь 10% от заработка реферала — это примерно 350+ ₽ с одного такого реферала.\n'
         'С OrbitCoins Plus ты получаешь уже 20% — около 700+ ₽ с одного реферала. <tg-emoji emoji-id="5438496463044752972">🤯</tg-emoji>\n'
-        'Получается, что всего один активный реферал может принести тебе 700+ ₽, а подписка за 200 ₽ окупается практически сразу.\n\n'
+        'Получается, что всего один активный реферал может принести тебе 700+ ₽, а подписка за 199 ₽ окупается практически сразу.\n\n'
         '<tg-emoji emoji-id="5231449120635370684">💸</tg-emoji> Не упускай дополнительный заработок!\n'
         'Подключай OrbitCoins Plus и получай максимум от каждого задания и каждого приглашённого друга. <tg-emoji emoji-id="5276032951342088188">💥</tg-emoji></b>',
         parse_mode="HTML",
@@ -5090,10 +5160,20 @@ async def callback_buy_premium(callback: CallbackQuery):
         await callback.message.delete()
     except Exception:
         pass
-    await callback.message.answer(
-        '<tg-emoji emoji-id="5381975814415866082">👇</tg-emoji> <b>Выберите способ оплаты:</b>',
+    await callback.message.answer_photo(
+        photo=f"{MINI_APP_URL}/static/bankcard.png",
+        caption='<tg-emoji emoji-id="5381975814415866082">👇</tg-emoji> <b>Выберите способ оплаты:</b>',
         parse_mode="HTML",
         reply_markup=premium_buy_keyboard(),
+    )
+
+
+async def callback_premium_card_pay(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        '<tg-emoji emoji-id="5445353829304387411">💳</tg-emoji> <b>Оплата банковской картой скоро будет доступна!</b>\n\n'
+        "Мы подключаем платёжную систему — совсем немного терпения 🙏",
+        parse_mode="HTML",
     )
 
 
@@ -5308,7 +5388,7 @@ async def cmd_premium(message: Message):
         'В среднем активные пользователи зарабатывают около 3 500 ₽ в месяц.\n'
         'Без Plus ты получаешь 10% от заработка реферала — это примерно 350+ ₽ с одного такого реферала.\n'
         'С OrbitCoins Plus ты получаешь уже 20% — около 700+ ₽ с одного реферала. <tg-emoji emoji-id="5438496463044752972">🤯</tg-emoji>\n'
-        'Получается, что всего один активный реферал может принести тебе 700+ ₽, а подписка за 200 ₽ окупается практически сразу.\n\n'
+        'Получается, что всего один активный реферал может принести тебе 700+ ₽, а подписка за 199 ₽ окупается практически сразу.\n\n'
         '<tg-emoji emoji-id="5231449120635370684">💸</tg-emoji> Не упускай дополнительный заработок!\n'
         'Подключай OrbitCoins Plus и получай максимум от каждого задания и каждого приглашённого друга. <tg-emoji emoji-id="5276032951342088188">💥</tg-emoji> </b>',
         parse_mode="HTML",
@@ -5433,6 +5513,9 @@ async def run_bot():
     dp.callback_query.register(callback_premium, F.data == "premium")
     dp.callback_query.register(callback_back_to_menu, F.data == "back_to_menu")
     dp.callback_query.register(callback_buy_premium, F.data == "get_premium")
+    dp.callback_query.register(
+        callback_premium_card_pay, F.data == "premium_card_pay"
+    )
     dp.callback_query.register(callback_stars_pay, F.data == "telegram_stars_pay")
     dp.callback_query.register(callback_crypto_pay, F.data == "crypto_pay")
     dp.callback_query.register(callback_watch_ad, F.data == "watch_ad")
