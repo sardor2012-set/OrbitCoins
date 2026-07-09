@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NodeLink — Админ Панель</title>
+    <title>OrbitCoins — Админ Панель</title>
     <script src="https://kit.fontawesome.com/44e8c440b6.js" crossorigin="anonymous"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -2181,6 +2181,12 @@
             </div>
 
             <div class="form-group">
+                <label class="form-label"><img src="/static/star.png" style="width:14px;height:14px;vertical-align:middle;"> Награда для Plus (необязательно)</label>
+                <input type="number" class="form-input" id="task-plus-reward-input" placeholder="Оставьте пустым, если не отличается" min="0" step="0.01">
+                <div style="font-size:0.78em;color:#888;margin-top:5px;"><i class="fa-solid fa-info-circle"></i> Если указано — Plus-пользователи получат эту награду вместо обычной за выполнение задания</div>
+            </div>
+
+            <div class="form-group">
                 <label class="form-label"><i class="fa-solid fa-tag" style="color:#a29bfe"></i> Тип задания</label>
                 <select class="status-select" id="task-type-select" onchange="onTaskTypeChange(this.value)">
                     <option value="subscription">Подписка</option>
@@ -2383,17 +2389,18 @@
                 ? `<span class="odv odv-copy" title="Нажмите, чтобы скопировать" onclick="copyOrderNick(this,'@${rawUsername.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">@${escHtml(rawUsername)}</span>`
                 : `<span class="odv">—</span>`;
             const rawNick = o.nick || '';
+            const plusStar = o.user_is_plus ? ' <img src="/static/star.png" style="width:14px;height:14px;vertical-align:middle;margin-left:2px;object-fit:contain;">' : '';
             const nickDisplay = rawNick
-                ? `<span class="odv odv-copy" title="Нажмите, чтобы скопировать" onclick="copyOrderNick(this,'${rawNick.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">${escHtml(rawNick)}</span>`
+                ? `<span class="odv odv-copy" title="Нажмите, чтобы скопировать" onclick="copyOrderNick(this,'${rawNick.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">${escHtml(rawNick)}${plusStar}</span>`
                 : `<span class="odv">—</span>`;
             const status = escHtml(o.user_status || '—');
             const methodLabels = {
                 holyworld: 'Коинами HolyWorld Lite',
+                card: 'Банковской картой',
                 sbp: 'СБП',
                 tinkoff: 'Тинькофф',
                 sberbank: 'Сбербанк',
                 qiwi: 'QIWI',
-                cryptobot: 'Crypto Bot',
             };
             const method = escHtml(methodLabels[o.method] || o.method || '—');
             const rawDetails = o.details || '';
@@ -3007,7 +3014,7 @@
                 return;
             }
             list.innerHTML = users.map(u => {
-                const displayName = escHtml(u.nick || u.first_name || ('ID ' + u.telegram_id));
+                const displayName = escHtml(u.nick || u.first_name || ('ID ' + u.telegram_id)) + (u.status === 'Premium' ? ' <img src="/static/star.png" style="width:14px;height:14px;vertical-align:middle;margin-left:2px;object-fit:contain;">' : '');
                 const uname = u.username ? '@' + escHtml(u.username) : '';
                 const isBlocked = u.is_blocked;
                 const statusLabel = isBlocked ? 'Заблокирован' : escHtml(u.status || 'Игрок');
@@ -4023,6 +4030,7 @@
                     </div>
                     <div class="promo-badges">
                         <span class="promo-badge" style="background:rgba(108,92,231,0.1);color:var(--primary);border:1px solid rgba(108,92,231,0.2);"><i class="fa-solid fa-coins"></i> +${t.reward} монет</span>
+                        ${t.plus_reward !== null && t.plus_reward !== undefined ? `<span class="promo-badge" style="background:rgba(253,203,110,0.15);color:#c6892a;border:1px solid rgba(253,203,110,0.3);"><img src="/static/star.png" style="width:11px;height:11px;vertical-align:middle;margin-right:2px;"> +${t.plus_reward} монет</span>` : ''}
                         <span class="promo-badge" style="background:rgba(0,0,0,0.05);color:${typeColor};border:1px solid rgba(0,0,0,0.08);"><i class="fa-solid ${typeIcon}"></i> ${typeLabel}</span>
                         ${(() => { const freq = t.task_frequency || 'one_time'; const fc = TASK_FREQ_COLORS[freq]||'#888'; const fl = TASK_FREQ_LABELS[freq]||freq; const rh = freq==='daily'?` · ${t.reset_hours||24}ч`:''; return `<span class="promo-badge" style="background:rgba(0,0,0,0.04);color:${fc};border:1px solid rgba(0,0,0,0.07);">${fl}${rh}</span>`; })()}
                         ${t.is_active === false ? `<span class="promo-badge" style="background:rgba(214,48,49,0.1);color:var(--danger);border:1px solid rgba(214,48,49,0.2);"><i class="fa-solid fa-eye-slash"></i> Скрыто</span>` : ''}
@@ -4070,6 +4078,7 @@
             document.getElementById('task-description-input').value = '';
             document.getElementById('task-instruction-input').value = '';
             document.getElementById('task-reward-input').value = '';
+            document.getElementById('task-plus-reward-input').value = '';
             document.getElementById('task-type-select').value = 'subscription';
             document.getElementById('task-channel-input').value = '';
             document.getElementById('task-btn-text-input').value = '';
@@ -4121,6 +4130,8 @@
             const description = document.getElementById('task-description-input').value.trim();
             const instruction = document.getElementById('task-instruction-input').value.trim();
             const reward = parseFloat(document.getElementById('task-reward-input').value) || 0;
+            const plusRewardRaw = document.getElementById('task-plus-reward-input').value.trim();
+            const plusReward = plusRewardRaw === '' ? null : parseFloat(plusRewardRaw);
             const taskType = document.getElementById('task-type-select').value;
             const channelLink = document.getElementById('task-channel-input').value.trim();
             const buttonText = document.getElementById('task-btn-text-input').value.trim();
@@ -4147,7 +4158,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         admin_id: Number(adminId),
-                        name, photo_url: photoUrl, reward, task_type: taskType,
+                        name, photo_url: photoUrl, reward, plus_reward: plusReward, task_type: taskType,
                         description, instruction,
                         channel_link: channelLink,
                         button_text: buttonText, button_url: buttonUrl,
