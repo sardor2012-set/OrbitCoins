@@ -4670,6 +4670,18 @@ def process_referral_db(inviter_id: int, invitee_id: int) -> dict:
             conn.close()
             return result
 
+        # Only credit the referral if the invitee's account was created just
+        # now (genuinely first-ever /start) — `created_at` is set once on
+        # insert and never touched again, so an old value here means this is
+        # an existing user re-opening a referral link, not a new signup.
+        # Prevents farming referral bonuses off already-registered users.
+        if invitee["created_at"] < datetime.now(timezone.utc) - timedelta(
+            minutes=30
+        ):
+            cur.close()
+            conn.close()
+            return result
+
         # Don't allow self-referral
         if inviter_id == invitee_id:
             cur.close()
@@ -5202,7 +5214,7 @@ async def callback_buy_premium(callback: CallbackQuery):
     except Exception:
         pass
     await callback.message.answer(
-        caption='<tg-emoji emoji-id="5381975814415866082">👇</tg-emoji> <b>Выберите способ оплаты:</b>',
+        '<tg-emoji emoji-id="5381975814415866082">👇</tg-emoji> <b>Выберите способ оплаты:</b>',
         parse_mode="HTML",
         reply_markup=premium_buy_keyboard(),
     )
