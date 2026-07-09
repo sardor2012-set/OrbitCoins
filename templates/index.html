@@ -4134,75 +4134,22 @@
 
                 <div class="premium-payment-label">Способ оплаты</div>
                 <div class="premium-payment-options">
-                    <!-- Telegram Stars -->
+                    <!-- Банковская карта -->
                     <button
-                        class="pay-option stars-opt"
-                        onclick="payWithStars()"
+                        class="pay-option"
+                        onclick="payWithCard()"
                     >
-                        <div class="pay-option-badge">Быстро</div>
                         <div class="pay-option-icon">
                             <img
-                                src="https://telegram.org/img/t_logo.svg"
-                                alt="Stars"
-                                style="
-                                    filter: brightness(0) invert(1);
-                                    width: 22px;
-                                    height: 22px;
-                                "
+                                src="/static/bankcard.png"
+                                alt="Банковская карта"
+                                style="width: 22px; height: 22px"
                             />
                         </div>
                         <div class="pay-option-body">
-                            <div class="pay-option-name">⭐ Telegram Stars</div>
+                            <div class="pay-option-name">💳 Банковской картой</div>
                             <div class="pay-option-desc">
-                                Оплата звёздами прямо в Telegram — быстро и
-                                безопасно
-                            </div>
-                        </div>
-                        <i
-                            class="fa-solid fa-chevron-right pay-option-arrow"
-                        ></i>
-                    </button>
-
-                    <!-- CryptoPay -->
-                    <button
-                        class="pay-option crypto-opt"
-                        onclick="payWithCrypto()"
-                    >
-                        <div class="pay-option-icon">
-                            <i
-                                class="fa-solid fa-circle-dollar-to-slot"
-                                style="color: white; font-size: 22px"
-                            ></i>
-                        </div>
-                        <div class="pay-option-body">
-                            <div class="pay-option-name">💎 CryptoPay</div>
-                            <div class="pay-option-desc">
-                                Оплата криптовалютой через @CryptoBot — TON,
-                                USDT и другие
-                            </div>
-                        </div>
-                        <i
-                            class="fa-solid fa-chevron-right pay-option-arrow"
-                        ></i>
-                    </button>
-
-                    <!-- Модератор -->
-                    <button
-                        class="pay-option mod-opt"
-                        onclick="payViaModerator()"
-                    >
-                        <div class="pay-option-icon">
-                            <i
-                                class="fa-solid fa-headset"
-                                style="color: white; font-size: 20px"
-                            ></i>
-                        </div>
-                        <div class="pay-option-body">
-                            <div class="pay-option-name">
-                                👨‍💼 Оплатить через модератора
-                            </div>
-                            <div class="pay-option-desc">
-                                Свяжитесь с администратором для ручной оплаты
+                                Оплата картой — быстро и безопасно
                             </div>
                         </div>
                         <i
@@ -5092,7 +5039,7 @@
                             </div>
                             <div class="withdraw-divider"></div>
                             <div
-                                class="withdraw-method-item"
+                                class="withdraw-method-item locked"
                                 data-method="card"
                                 onclick="selectWithdrawMethod('card')"
                             >
@@ -8141,11 +8088,7 @@
                 .catch(() => {});
 
             function openPremiumModal() {
-                showToast("OrbitCoins Plus временно не доступен!", "error");
-                if (window.Telegram && Telegram.WebApp) {
-                    Telegram.WebApp.HapticFeedback &&
-                        Telegram.WebApp.HapticFeedback.notificationOccurred("error");
-                }
+                document.getElementById("premium-modal").classList.add("open");
             }
 
             function closePremiumModal() {
@@ -8160,99 +8103,12 @@
                     if (e.target === this) closePremiumModal();
                 });
 
-            async function payWithStars() {
-                if (!userId) {
-                    showToast("Ошибка: пользователь не определён");
-                    return;
-                }
+            function payWithCard() {
                 closePremiumModal();
-                try {
-                    const res = await fetch("/api/premium/invoice/stars", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ user_id: userId }),
-                    });
-                    const data = await res.json();
-                    if (data.ok && data.invoice_link) {
-                        if (
-                            window.Telegram &&
-                            Telegram.WebApp &&
-                            Telegram.WebApp.openInvoice
-                        ) {
-                            Telegram.WebApp.openInvoice(
-                                data.invoice_link,
-                                function (status) {
-                                    if (status === "paid") {
-                                        showToast(
-                                            "✅ Оплата прошла! Премиум активирован 🎉",
-                                        );
-                                        setTimeout(() => loadUserData(), 2000);
-                                    } else if (status === "cancelled") {
-                                        showToast("Оплата отменена");
-                                    } else if (status === "failed") {
-                                        showToast(
-                                            "❌ Ошибка оплаты, попробуйте снова",
-                                        );
-                                    }
-                                },
-                            );
-                        } else {
-                            window.open(data.invoice_link, "_blank");
-                        }
-                    } else {
-                        showToast(data.error || "Ошибка создания счёта");
-                    }
-                } catch (e) {
-                    showToast("Ошибка соединения");
-                }
-            }
-
-            async function payWithCrypto() {
-                if (!userId) {
-                    showToast("Ошибка: пользователь не определён");
-                    return;
-                }
-                closePremiumModal();
-                try {
-                    const res = await fetch("/api/premium/invoice/crypto", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ user_id: userId }),
-                    });
-                    const data = await res.json();
-                    if (data.ok && data.pay_url) {
-                        if (
-                            window.Telegram &&
-                            Telegram.WebApp &&
-                            Telegram.WebApp.openLink
-                        ) {
-                            Telegram.WebApp.openLink(data.pay_url);
-                        } else {
-                            window.open(data.pay_url, "_blank");
-                        }
-                        showToast("💎 Счёт создан! Оплатите через CryptoBot");
-                    } else {
-                        showToast(
-                            data.error || "Ошибка создания счёта CryptoPay",
-                        );
-                    }
-                } catch (e) {
-                    showToast("Ошибка соединения");
-                }
-            }
-
-            function payViaModerator() {
-                closePremiumModal();
-                const url = "https://t.me/OrbitSupporter_bot";
-                if (
-                    window.Telegram &&
-                    Telegram.WebApp &&
-                    Telegram.WebApp.openLink
-                ) {
-                    Telegram.WebApp.openLink(url);
-                } else {
-                    window.open(url, "_blank");
-                }
+                showToast(
+                    "💳 Оплата картой скоро будет доступна, мы подключаем платёжную систему",
+                    "error",
+                );
             }
 
             async function loadUserData() {
