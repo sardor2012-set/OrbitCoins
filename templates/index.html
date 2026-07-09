@@ -5092,6 +5092,25 @@
                             </div>
                             <div class="withdraw-divider"></div>
                             <div
+                                class="withdraw-method-item"
+                                data-method="card"
+                                onclick="selectWithdrawMethod('card')"
+                            >
+                                <div class="withdraw-method-icon">
+                                    <img
+                                        src="/static/bankcard.png"
+                                        alt="Банковская карта"
+                                    />
+                                </div>
+                                <div class="withdraw-method-body">
+                                    <div class="withdraw-method-name">
+                                        Банковской картой
+                                    </div>
+                                </div>
+                                <div class="withdraw-radio"></div>
+                            </div>
+                            <div class="withdraw-divider"></div>
+                            <div
                                 class="withdraw-method-item locked"
                                 data-method="sbp"
                             >
@@ -5180,31 +5199,6 @@
                                     <div class="withdraw-method-name-row">
                                         <div class="withdraw-method-name">
                                             QIWI
-                                        </div>
-                                        <div class="withdraw-soon-badge">
-                                            Скоро
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="withdraw-lock-icon">
-                                    <i class="fa-solid fa-lock"></i>
-                                </div>
-                            </div>
-                            <div class="withdraw-divider"></div>
-                            <div
-                                class="withdraw-method-item locked"
-                                data-method="cryptobot"
-                            >
-                                <div class="withdraw-method-icon">
-                                    <img
-                                        src="/static/crypto.png"
-                                        alt="Crypto Bot"
-                                    />
-                                </div>
-                                <div class="withdraw-method-body">
-                                    <div class="withdraw-method-name-row">
-                                        <div class="withdraw-method-name">
-                                            Crypto Bot
                                         </div>
                                         <div class="withdraw-soon-badge">
                                             Скоро
@@ -5971,6 +5965,7 @@
             let withdrawMethod = "holyworld";
             const withdrawMethodLabels = {
                 holyworld: "Кошелёк HolyWorld Lite",
+                card: "Номер карты",
                 sbp: "Номер телефона для СБП",
                 tinkoff: "Номер карты Тинькофф",
                 sberbank: "Номер карты Сбербанк",
@@ -5978,6 +5973,7 @@
             };
             const withdrawMethodPlaceholders = {
                 holyworld: "ID кошелька HolyWorld Lite",
+                card: "0000 0000 0000 0000",
                 sbp: "+7 (999) 123-45-67",
                 tinkoff: "0000 0000 0000 0000",
                 sberbank: "0000 0000 0000 0000",
@@ -6223,8 +6219,9 @@
                 const profileNick =
                     document.getElementById("profile-card-nick");
                 if (currentNick) {
-                    nickEl.textContent = currentNick;
-                    profileNick.textContent = currentNick;
+                    const safeNick = escHtmlTask(currentNick);
+                    nickEl.innerHTML = safeNick + premStar;
+                    profileNick.innerHTML = safeNick + premStar;
                 } else {
                     nickEl.textContent = "установить";
                     profileNick.textContent = "—";
@@ -6232,7 +6229,10 @@
 
                 const refBadge = document.getElementById("referral-reward-badge");
                 if (refBadge) {
-                    refBadge.textContent = "🤑 10% от заработка рефералов";
+                    refBadge.textContent =
+                        currentStatus === "Premium"
+                            ? "🤑 20% от заработка рефералов"
+                            : "🤑 10% от заработка рефералов";
                 }
 
                 const premiumEl = document.getElementById(
@@ -6784,11 +6784,15 @@
                     const data = await res.json();
                     if (data.telegram_id) {
                         currentNick = data.nick;
-                        document.getElementById("header-nick").textContent =
-                            currentNick;
+                        const nickStar =
+                            currentStatus === "Premium"
+                                ? ' <img src="/static/star.png" style="width:16px;height:16px;vertical-align:middle;margin-left:3px;object-fit:contain;">'
+                                : "";
+                        document.getElementById("header-nick").innerHTML =
+                            escHtmlTask(currentNick) + nickStar;
                         document.getElementById(
                             "profile-card-nick",
-                        ).textContent = currentNick;
+                        ).innerHTML = escHtmlTask(currentNick) + nickStar;
                         closeNickModal();
                         showToast("Ник сохранён: " + currentNick, "success");
                     } else {
@@ -6955,7 +6959,19 @@
                         const iconHtml = t.photo_url
                             ? `<img src="${escHtmlTask(t.photo_url)}" alt="icon" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,0.12);">`
                             : `<div class="task-icon">${t.task_type === "video" ? "🎬" : t.task_type === "subscription" ? "📢" : t.task_type === "screenshot" ? "📸" : t.task_type === "ad_reward" ? "📺" : t.task_type === "ad_popup" ? "🎁" : t.task_type === "ad_task" ? "📋" : t.task_type === "adsgram" ? "📺" : t.task_type === "richads" ? "📺" : "🎁"}</div>`;
-                        const rewardHtml = `<div class="task-reward-badge">Награда: +${t.reward} <i class="fa-solid fa-coins" style="color:#c6892a;font-size:10px;"></i></div>`;
+                        const effReward =
+                            currentStatus === "Premium" &&
+                            t.plus_reward !== null &&
+                            t.plus_reward !== undefined
+                                ? t.plus_reward
+                                : t.reward;
+                        const plusRewardBadge =
+                            currentStatus !== "Premium" &&
+                            t.plus_reward !== null &&
+                            t.plus_reward !== undefined
+                                ? ` <img src="/static/star.png" style="width:11px;height:11px;vertical-align:middle;margin:0 1px;">+${t.plus_reward}`
+                                : "";
+                        const rewardHtml = `<div class="task-reward-badge">Награда: +${effReward} <i class="fa-solid fa-coins" style="color:#c6892a;font-size:10px;"></i>${plusRewardBadge}</div>`;
                         const freqBadge = isDaily
                             ? `<span class="task-freq-badge daily"><i class="fa-solid fa-rotate" style="font-size:9px;"></i> Ежедневное</span>`
                             : `<span class="task-freq-badge one-time"><i class="fa-solid fa-circle-dot" style="font-size:9px;"></i> Одиночное</span>`;
@@ -7450,6 +7466,7 @@
 
             async function showPeriodicInterstitial() {
                 if (!userId || document.visibilityState !== "visible") return;
+                if (currentStatus === "Premium") return;
                 if (document.querySelector(".modal-overlay.open")) return;
                 ensureAdControllers();
                 try {
@@ -7465,7 +7482,7 @@
                 }
             }
 
-            setInterval(showPeriodicInterstitial, 3 * 60 * 1000);
+            setInterval(showPeriodicInterstitial, 4 * 60 * 1000);
 
             async function watchAdsgramTaskCard(taskId, blockId) {
                 if (!blockId || !window.Adsgram) {
@@ -7797,7 +7814,7 @@
                             return `<div class="leaderboard-card ${cardClass}">
                     <div class="leaderboard-avatar" id="ev-avatar-${u.telegram_id}" style="background:${color}">${escHtml(initial)}</div>
                     <div class="leaderboard-info">
-                        <div class="leaderboard-username">${escHtml(name)}${escHtml(username)}${u.status === "Premium" ? ' <img src="/static/star.png" style="width:14px;height:14px;vertical-align:middle;margin-left:2px;object-fit:contain;">' : ""}</div>
+                        <div class="leaderboard-username">${escHtml(name)}${escHtml(username)}${u.is_plus ? ' <img src="/static/star.png" style="width:14px;height:14px;vertical-align:middle;margin-left:2px;object-fit:contain;">' : ""}</div>
                         <div class="leaderboard-sub">👥 ${refs} приглашений</div>
                     </div>
                     ${rankHtml}
@@ -8009,6 +8026,7 @@
 
             const WITHDRAW_METHOD_LABELS = {
                 holyworld: "HolyWorld Lite",
+                card: "Банковская карта",
                 sbp: "СБП",
                 tinkoff: "Т-Банк",
                 sberbank: "Сбербанк",
@@ -8272,10 +8290,18 @@
                         const nickEl = document.getElementById("header-nick");
                         const profileNick =
                             document.getElementById("profile-card-nick");
+                        const nickStar =
+                            currentStatus === "Premium"
+                                ? ' <img src="/static/star.png" style="width:16px;height:16px;vertical-align:middle;margin-left:3px;object-fit:contain;">'
+                                : "";
                         if (nickEl)
-                            nickEl.textContent = currentNick || "установить";
+                            nickEl.innerHTML = currentNick
+                                ? escHtmlTask(currentNick) + nickStar
+                                : "установить";
                         if (profileNick)
-                            profileNick.textContent = currentNick || "—";
+                            profileNick.innerHTML = currentNick
+                                ? escHtmlTask(currentNick) + nickStar
+                                : "—";
                     }
                 } catch (e) {}
             }
