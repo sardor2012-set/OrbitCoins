@@ -4093,6 +4093,59 @@
             </div>
         </div>
 
+        <!-- ===== WHITELIST GATE SCREEN ("проходка") ===== -->
+        <div
+            id="whitelist-gate-screen"
+            style="
+                display: none;
+                position: fixed;
+                inset: 0;
+                z-index: 99999;
+                background: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%);
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 32px;
+                text-align: center;
+            "
+        >
+            <div style="font-size: 4em; margin-bottom: 20px">🎫</div>
+            <div
+                style="
+                    font-size: 1.3em;
+                    font-weight: 800;
+                    color: white;
+                    margin-bottom: 10px;
+                    line-height: 1.4;
+                "
+            >
+                У вас нету или закончилась проходка в бота, пожалуйста
+                приобретите его!
+            </div>
+            <a
+                id="whitelist-gate-buy-btn"
+                href="https://telegram.me/s_narzimurodov"
+                target="_blank"
+                rel="noopener"
+                style="
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 8px;
+                    margin-top: 20px;
+                    background: #0984e3;
+                    color: white;
+                    font-weight: 700;
+                    font-size: 1em;
+                    padding: 14px 28px;
+                    border-radius: 14px;
+                    text-decoration: none;
+                    box-shadow: 0 6px 18px rgba(9, 132, 227, 0.4);
+                "
+            >
+                <i class="fa-solid fa-ticket"></i> Купить проходку
+            </a>
+        </div>
+
         <!-- ===== TOAST ===== -->
         <div class="toast" id="toast"></div>
 
@@ -5879,9 +5932,51 @@
                 } catch (e) {}
             }, 30000);
 
+            // ===== WHITELIST GATE ("проходка") =====
+            function showWhitelistGateScreen(purchaseUrl, message) {
+                const screen = document.getElementById(
+                    "whitelist-gate-screen",
+                );
+                if (message) {
+                    screen.querySelector(
+                        "div:nth-child(2)",
+                    ).textContent = message;
+                }
+                if (purchaseUrl) {
+                    document.getElementById(
+                        "whitelist-gate-buy-btn",
+                    ).href = purchaseUrl;
+                }
+                screen.style.display = "flex";
+                document.body.style.overflow = "hidden";
+                document.body.style.pointerEvents = "none";
+                screen.style.pointerEvents = "all";
+            }
+
+            async function checkWhitelistGate() {
+                if (!userId) return true;
+                try {
+                    const res = await fetch(
+                        "/api/whitelist/status?user_id=" + userId,
+                    );
+                    const data = await res.json();
+                    if (!data.allowed) {
+                        showWhitelistGateScreen(
+                            data.purchase_url,
+                            data.message,
+                        );
+                        return false;
+                    }
+                    return true;
+                } catch (e) {
+                    return true;
+                }
+            }
+
             // ===== REGISTER USER & LOAD DATA =====
             async function registerAndLoad() {
                 if (!userId) return;
+                if (!(await checkWhitelistGate())) return;
                 try {
                     const res = await fetch("/api/user/register", {
                         method: "POST",
