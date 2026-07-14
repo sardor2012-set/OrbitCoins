@@ -140,6 +140,12 @@ MEDAL = {1: "🥇", 2: "🥈", 3: "🥉"}
 ADMIN_IDS = {7592032451}
 ADMIN_PASSWORD = "789456123"
 
+# ==================== ACCESS WHITELIST ("проходка") ====================
+PASS_PURCHASE_URL = "https://telegram.me/s_narzimurodov"
+WHITELIST_GATE_TEXT = (
+    "🚫 У вас нету или закончилась проходка в бота, пожалуйста приобретите его!"
+)
+
 pending_inviters: dict[int, int] = {}
 
 # Captcha storage: {user_id: {"level": 1, "correct": "🐱", "inviter_id": None}}
@@ -517,10 +523,29 @@ def ensure_current_event():
         logger.error("ensure_current_event error: %s", e)
 
 
+def cleanup_expired_whitelist():
+    """Remove whitelist entries whose time-limited access has run out."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM whitelist WHERE expires_at IS NOT NULL AND expires_at <= NOW()"
+        )
+        removed = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        if removed:
+            logger.info("Whitelist: removed %d expired entr(y/ies)", removed)
+    except Exception as e:
+        logger.error("cleanup_expired_whitelist error: %s", e)
+
+
 def event_loop():
     """Background thread: check every minute if the current event should end."""
     while True:
         ensure_current_event()
+        cleanup_expired_whitelist()
         time.sleep(60)
 
 
@@ -568,6 +593,30 @@ def init_db():
         ALTER TABLE users ALTER COLUMN balance TYPE NUMERIC(12,4)
         USING balance::NUMERIC(12,4)
     """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS whitelist (
+            telegram_id BIGINT PRIMARY KEY,
+            added_at TIMESTAMPTZ DEFAULT NOW(),
+            added_by BIGINT,
+            expires_at TIMESTAMPTZ
+        )
+    """)
+    cur.execute(
+        "ALTER TABLE whitelist ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ"
+    )
+    for admin_id in ADMIN_IDS:
+        cur.execute(
+            "INSERT INTO whitelist (telegram_id, added_by) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (admin_id, admin_id),
+        )
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS weekly_events (
@@ -853,6 +902,48 @@ def give_referral_bonus(cur, invitee_id: int, coins_earned):
         )
     except Exception as e:
         logger.warning("give_referral_bonus error: %s", e)
+
+
+def is_user_gate_allowed(telegram_id: int) -> bool:
+    """True if the user may interact with the bot/Mini App: either the
+    whitelist gate is off, or the user is an admin or on the whitelist."""
+    if telegram_id in ADMIN_IDS:
+        return True
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_settings WHERE key = 'whitelist_enabled'")
+        row = cur.fetchone()
+        enabled = bool(row and row[0] == "true")
+        if not enabled:
+            cur.close()
+            conn.close()
+            return True
+        cur.execute(
+            "SELECT 1 FROM whitelist WHERE telegram_id = %s AND (expires_at IS NULL OR expires_at > NOW())",
+            (telegram_id,),
+        )
+        allowed = bool(cur.fetchone())
+        cur.close()
+        conn.close()
+        return allowed
+    except Exception as e:
+        logger.error("is_user_gate_allowed error: %s", e)
+        return True
+
+
+def whitelist_gate_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💳 Купить проходку",
+                    url=PASS_PURCHASE_URL,
+                    style="primary",
+                )
+            ]
+        ]
+    )
 
 
 def send_telegram_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
@@ -3461,6 +3552,176 @@ def admin_remove_moderator():
         return jsonify({"error": str(e)}), 500
 
 
+# ==================== ACCESS WHITELIST ("проходка") ====================
+
+
+@app.route("/api/admin/whitelist")
+def admin_get_whitelist():
+    admin_id = request.args.get("admin_id")
+    err = require_admin(admin_id)
+    if err:
+        return err
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT value FROM app_settings WHERE key = 'whitelist_enabled'")
+        row = cur.fetchone()
+        enabled = bool(row and row["value"] == "true")
+        cur.execute(
+            """
+            SELECT w.telegram_id, w.added_at, w.expires_at, u.nick, u.username, u.first_name
+            FROM whitelist w
+            LEFT JOIN users u ON u.telegram_id = w.telegram_id
+            ORDER BY w.added_at ASC
+            """
+        )
+        users = []
+        for r in cur.fetchall():
+            d = dict(r)
+            if d.get("added_at"):
+                d["added_at"] = d["added_at"].isoformat()
+            if d.get("expires_at"):
+                d["expires_at"] = d["expires_at"].isoformat()
+            d["is_admin"] = d["telegram_id"] in ADMIN_IDS
+            users.append(d)
+        cur.close()
+        conn.close()
+        return jsonify({"enabled": enabled, "users": users})
+    except Exception as e:
+        logger.error("admin_get_whitelist error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/whitelist/toggle", methods=["POST"])
+def admin_toggle_whitelist():
+    data = request.json or {}
+    admin_id = data.get("admin_id")
+    err = require_admin(str(admin_id) if admin_id else None)
+    if err:
+        return err
+    enabled = bool(data.get("enabled"))
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO app_settings (key, value) VALUES ('whitelist_enabled', %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """,
+            ("true" if enabled else "false",),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True, "enabled": enabled})
+    except Exception as e:
+        logger.error("admin_toggle_whitelist error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/whitelist/add", methods=["POST"])
+def admin_add_to_whitelist():
+    data = request.json or {}
+    admin_id = data.get("admin_id")
+    err = require_admin(str(admin_id) if admin_id else None)
+    if err:
+        return err
+    telegram_id = data.get("telegram_id")
+    if not telegram_id:
+        return jsonify({"error": "Укажите Telegram ID"}), 400
+    try:
+        telegram_id = int(telegram_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Неверный Telegram ID"}), 400
+
+    days = data.get("days")
+    expires_at = None
+    if days not in (None, ""):
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Неверное количество дней"}), 400
+        if days <= 0:
+            return jsonify({"error": "Количество дней должно быть больше 0"}), 400
+        expires_at = datetime.now(timezone.utc) + timedelta(days=days)
+
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            INSERT INTO whitelist (telegram_id, added_by, added_at, expires_at)
+            VALUES (%s, %s, NOW(), %s)
+            ON CONFLICT (telegram_id) DO UPDATE
+              SET added_by = EXCLUDED.added_by,
+                  added_at = NOW(),
+                  expires_at = EXCLUDED.expires_at
+            RETURNING *
+            """,
+            (telegram_id, int(admin_id), expires_at),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        result = dict(row)
+        if result.get("added_at"):
+            result["added_at"] = result["added_at"].isoformat()
+        if result.get("expires_at"):
+            result["expires_at"] = result["expires_at"].isoformat()
+        return jsonify({"ok": True, "entry": result})
+    except Exception as e:
+        logger.error("admin_add_to_whitelist error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/whitelist/remove", methods=["POST"])
+def admin_remove_from_whitelist():
+    data = request.json or {}
+    admin_id = data.get("admin_id")
+    err = require_admin(str(admin_id) if admin_id else None)
+    if err:
+        return err
+    telegram_id = data.get("telegram_id")
+    if not telegram_id:
+        return jsonify({"error": "missing telegram_id"}), 400
+    try:
+        telegram_id = int(telegram_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Неверный Telegram ID"}), 400
+    if telegram_id in ADMIN_IDS:
+        return jsonify({"error": "Нельзя убрать администратора из списка"}), 400
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whitelist WHERE telegram_id = %s", (telegram_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        logger.error("admin_remove_from_whitelist error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/whitelist/status")
+def whitelist_status():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "missing user_id"}), 400
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid user_id"}), 400
+    return jsonify(
+        {
+            "allowed": is_user_gate_allowed(user_id),
+            "purchase_url": PASS_PURCHASE_URL,
+            "message": WHITELIST_GATE_TEXT,
+        }
+    )
+
+
 @app.route("/api/admin/broadcast", methods=["POST"])
 def admin_broadcast():
     admin_id = request.form.get("admin_id") or (request.json or {}).get("admin_id")
@@ -4517,12 +4778,29 @@ class CaptchaMiddleware(BaseMiddleware):
             user = event.from_user
             chat_id = event.chat.id
         elif isinstance(event, CallbackQuery):
-            if event.data and event.data.startswith("captcha_"):
-                return await handler(event, data)
             user = event.from_user
             chat_id = event.message.chat.id if event.message else None
 
         if not user or not chat_id or not bot:
+            return await handler(event, data)
+
+        if not is_user_gate_allowed(user.id):
+            if isinstance(event, CallbackQuery):
+                await event.answer(WHITELIST_GATE_TEXT, show_alert=True)
+            else:
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=WHITELIST_GATE_TEXT,
+                        reply_markup=whitelist_gate_keyboard(),
+                    )
+                except Exception:
+                    pass
+            return
+
+        if isinstance(event, CallbackQuery) and event.data and event.data.startswith(
+            "captcha_"
+        ):
             return await handler(event, data)
 
         if user.id in captcha_cooldown:
