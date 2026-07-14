@@ -887,6 +887,43 @@
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 12px;
         }
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 46px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .switch .slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background-color: #ccc;
+            transition: 0.2s;
+            border-radius: 26px;
+        }
+        .switch .slider::before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.2s;
+            border-radius: 50%;
+        }
+        .switch input:checked + .slider {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+        }
+        .switch input:checked + .slider::before {
+            transform: translateX(20px);
+        }
         .order-row {
             display: flex;
             gap: 65px;
@@ -1720,6 +1757,32 @@
                     <div class="loading"><i class="fa-solid fa-spinner fa-spin"></i> Загрузка...</div>
                 </div>
             </div>
+
+            <!-- Whitelist ("проходка") block -->
+            <div class="card">
+                <div class="card-title">
+                    <span><i class="fa-solid fa-ticket"></i> Белый список (проходка)</span>
+                    <button onclick="loadWhitelist()" style="background:none;border:none;cursor:pointer;color:#888;font-size:0.85em;" title="Обновить"><i class="fa-solid fa-rotate-right"></i></button>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border,#e0e7ef);margin-bottom:14px;">
+                    <div>
+                        <div style="font-weight:700;font-size:0.95em;">Ограничить доступ к боту</div>
+                        <div style="font-size:0.78em;color:#888;margin-top:2px;">Если включено — пользоваться ботом и Mini App смогут только те, кто в списке ниже (и админ — всегда)</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="whitelist-enabled-toggle" onchange="toggleWhitelist(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div style="display:flex;gap:8px;margin-bottom:14px;">
+                    <input type="text" class="form-input" id="whitelist-add-input" placeholder="Telegram ID пользователя" style="flex:2;margin:0;">
+                    <input type="number" class="form-input" id="whitelist-days-input" placeholder="Дней (пусто = навсегда)" min="1" style="flex:1;margin:0;">
+                    <button class="btn-save" style="width:auto;padding:0 18px;margin:0;" onclick="addToWhitelist()"><i class="fa-solid fa-plus"></i></button>
+                </div>
+                <div id="whitelist-list">
+                    <div class="loading"><i class="fa-solid fa-spinner fa-spin"></i> Загрузка...</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -2345,6 +2408,7 @@
                 document.getElementById('management-section').style.display = 'block';
                 document.getElementById('promo-section').style.display = 'block';
                 loadModerators();
+                loadWhitelist();
                 loadPromoCodes();
                 await Promise.all([loadStats(), loadCharts(), loadOrders(), loadCompletedOrders(), loadUsers()]);
             } else {
@@ -3462,6 +3526,118 @@
                 showToast('Модератор удалён.', 'success');
             } catch(e) {
                 showToast('Сетевая ошибка при удалении модератора.', 'error');
+            }
+        }
+
+        // ===== WHITELIST (проходка) =====
+        async function loadWhitelist() {
+            try {
+                const res = await fetch('/api/admin/whitelist?admin_id=' + adminId);
+                if (!res.ok) return;
+                const d = await res.json();
+                document.getElementById('whitelist-enabled-toggle').checked = !!d.enabled;
+                renderWhitelist(Array.isArray(d.users) ? d.users : []);
+            } catch(e) {
+                console.error('loadWhitelist error', e);
+            }
+        }
+
+        function renderWhitelist(users) {
+            const list = document.getElementById('whitelist-list');
+            if (!users || users.length === 0) {
+                list.innerHTML = `<div class="empty-state"><i class="fa-solid fa-ticket"></i> Список пуст</div>`;
+                return;
+            }
+            list.innerHTML = users.map(u => {
+                const dateStr = u.added_at ? new Date(u.added_at).toLocaleDateString('ru-RU') : '—';
+                const displayName = escHtml(u.nick || u.first_name || u.username || ('ID ' + u.telegram_id));
+                const adminTag = u.is_admin ? ' <span style="color:#fdcb6e;font-weight:700;">(админ)</span>' : '';
+                const removeBtn = u.is_admin
+                    ? ''
+                    : `<button class="btn-remove-mod" onclick="removeFromWhitelist(${u.telegram_id})" title="Убрать из списка"><i class="fa-solid fa-xmark"></i></button>`;
+                let expiryHtml;
+                if (u.is_admin || !u.expires_at) {
+                    expiryHtml = `<span style="color:#00b894;font-weight:600;"><i class="fa-solid fa-infinity"></i> Бессрочно</span>`;
+                } else {
+                    const msLeft = new Date(u.expires_at).getTime() - Date.now();
+                    const daysLeft = Math.max(0, Math.ceil(msLeft / 86400000));
+                    const expDateStr = new Date(u.expires_at).toLocaleDateString('ru-RU');
+                    expiryHtml = `<span style="color:#e17055;font-weight:600;"><i class="fa-solid fa-hourglass-half"></i> До ${expDateStr} (${daysLeft} дн.)</span>`;
+                }
+                return `<div class="mod-item">
+                    <div class="mod-info">
+                        <div class="mod-name"><i class="fa-solid fa-user" style="color:#6c5ce7;margin-right:6px;"></i>${displayName}${adminTag}</div>
+                        <div class="mod-meta"><i class="fa-brands fa-telegram" style="color:#0984e3;"></i> ID: ${u.telegram_id} &nbsp;·&nbsp; <i class="fa-solid fa-calendar" style="color:#a29bfe;"></i> Добавлен: ${dateStr} &nbsp;·&nbsp; ${expiryHtml}</div>
+                    </div>
+                    ${removeBtn}
+                </div>`;
+            }).join('');
+        }
+
+        async function toggleWhitelist(enabled) {
+            try {
+                const res = await fetch('/api/admin/whitelist/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ admin_id: Number(adminId), enabled })
+                });
+                const d = await res.json();
+                if (!res.ok || !d.ok) {
+                    showToast('Ошибка: ' + (d.error || 'неизвестно'), 'error');
+                    document.getElementById('whitelist-enabled-toggle').checked = !enabled;
+                    return;
+                }
+                showToast(enabled ? 'Проходка включена — доступ ограничен списком.' : 'Проходка выключена — доступен всем.', 'success');
+            } catch(e) {
+                showToast('Сетевая ошибка.', 'error');
+                document.getElementById('whitelist-enabled-toggle').checked = !enabled;
+            }
+        }
+
+        async function addToWhitelist() {
+            const input = document.getElementById('whitelist-add-input');
+            const daysInput = document.getElementById('whitelist-days-input');
+            const tid = input.value.trim();
+            const days = daysInput.value.trim();
+            if (!tid) { showToast('Укажите Telegram ID.', 'error'); return; }
+            try {
+                const res = await fetch('/api/admin/whitelist/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        admin_id: Number(adminId),
+                        telegram_id: Number(tid),
+                        days: days ? Number(days) : null
+                    })
+                });
+                const d = await res.json();
+                if (!res.ok || !d.ok) {
+                    showToast(d.error || 'Ошибка при добавлении.', 'error');
+                    return;
+                }
+                input.value = '';
+                daysInput.value = '';
+                loadWhitelist();
+                showToast(days ? `Пользователь добавлен на ${days} дн.` : 'Пользователь добавлен навсегда.', 'success');
+            } catch(e) {
+                showToast('Сетевая ошибка.', 'error');
+            }
+        }
+
+        async function removeFromWhitelist(tid) {
+            if (!confirm('Убрать пользователя ID ' + tid + ' из списка?')) return;
+            try {
+                const res = await fetch('/api/admin/whitelist/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ admin_id: Number(adminId), telegram_id: tid })
+                });
+                const d = await res.json();
+                if (!res.ok || !d.ok) { showToast('Ошибка: ' + (d.error || 'неизвестно'), 'error'); return; }
+                loadWhitelist();
+                showToast('Пользователь убран из списка.', 'success');
+            } catch(e) {
+                showToast('Сетевая ошибка.', 'error');
             }
         }
 
