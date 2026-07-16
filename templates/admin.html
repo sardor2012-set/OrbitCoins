@@ -1830,6 +1830,12 @@
                 <input type="number" class="form-input" id="edit-balance" placeholder="Баланс..." min="0">
             </div>
 
+            <div class="form-group">
+                <label class="form-label"><i class="fa-solid fa-clock" style="color:#e17055"></i> Монеты на удержании</label>
+                <input type="number" class="form-input" id="edit-held-balance" placeholder="На удержании..." min="0" step="0.01">
+                <div style="font-size:0.78em;color:#888;margin-top:5px;"><i class="fa-solid fa-info-circle"></i> Ждут 7 дней с момента выполнения задания, потом сами переходят в баланс</div>
+            </div>
+
             <div class="form-row">
                 <div class="form-group">
                     <label class="form-label"><i class="fa-solid fa-link" style="color:#00cec9"></i> Рефералы</label>
@@ -3173,6 +3179,7 @@
 
             // Pre-fill editable fields
             document.getElementById('edit-balance').value = user.balance ?? 0;
+            document.getElementById('edit-held-balance').value = user.held_balance ?? 0;
             document.getElementById('edit-referrals').value = user.referral_count ?? 0;
             document.getElementById('edit-event-refs').value = user.event_referral_count ?? 0;
 
@@ -3253,6 +3260,7 @@
             if (!selectedUser) return;
 
             const balanceVal = document.getElementById('edit-balance').value.trim();
+            const heldBalanceVal = document.getElementById('edit-held-balance').value.trim();
             const referralsVal = document.getElementById('edit-referrals').value.trim();
             const eventRefsVal = document.getElementById('edit-event-refs').value.trim();
             const newStatus = document.getElementById('edit-status').value;
@@ -3284,6 +3292,14 @@
                     return;
                 }
                 payload.balance = b;
+            }
+            if (heldBalanceVal !== '') {
+                const hb = parseFloat(heldBalanceVal);
+                if (isNaN(hb) || hb < 0) {
+                    showToast('Баланс на удержании должен быть числом ≥ 0.', 'error');
+                    return;
+                }
+                payload.held_balance = hb;
             }
             if (referralsVal !== '') {
                 const r = parseInt(referralsVal);
