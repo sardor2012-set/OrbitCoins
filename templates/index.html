@@ -4623,7 +4623,7 @@
                 <div
                     class="balance-card"
                     id="held-balance-card"
-                    style="display: none; margin-top: 10px"
+                    style="margin-top: 10px"
                 >
                     <div
                         class="balance-icon"
@@ -4744,23 +4744,6 @@
                         class="fa-solid fa-chevron-right cpx-survey-arrow"
                     ></i>
                 </div>
-
-                <!-- Rewarded video ad -->
-                <div
-                    class="cpx-survey-banner"
-                    id="watch-ad-banner"
-                    onclick="watchRewardedAd()"
-                    style="background: linear-gradient(135deg, #fd79a8, #fdcb6e)"
-                >
-                    <div class="cpx-survey-icon">
-                        <i class="fa-solid fa-tv"></i>
-                    </div>
-                    <i
-                        class="fa-solid fa-chevron-right cpx-survey-arrow"
-                    ></i>
-                </div>
-
-                <!-- AdsGram task-format ads -->
 
                 <!-- Tasks List -->
                 <div id="products-container">
@@ -6271,15 +6254,8 @@
 
             function updateHeldBalanceUI(heldBalance) {
                 const amount = parseFloat(heldBalance) || 0;
-                const card = document.getElementById("held-balance-card");
-                if (!card) return;
-                if (amount > 0) {
-                    document.getElementById("held-balance").textContent =
-                        fmtBalance(amount);
-                    card.style.display = "flex";
-                } else {
-                    card.style.display = "none";
-                }
+                const el = document.getElementById("held-balance");
+                if (el) el.textContent = fmtBalance(amount);
             }
 
             function updateUserUI(data) {
@@ -6456,8 +6432,6 @@
                 document.getElementById(
                     "bitlabs-survey-banner",
                 ).style.display = isShop ? "flex" : "none";
-                document.getElementById("watch-ad-banner").style.display =
-                    isShop ? "flex" : "none";
                 document.getElementById("purchases-container").style.display =
                     isShop ? "none" : "block";
                 if (!isShop) {
