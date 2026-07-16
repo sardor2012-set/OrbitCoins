@@ -546,6 +546,7 @@ def event_loop():
     while True:
         ensure_current_event()
         cleanup_expired_whitelist()
+        release_matured_task_rewards()
         time.sleep(60)
 
 
@@ -781,6 +782,15 @@ def init_db():
     cur.execute("ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS proof_url TEXT")
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_task_rewards (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            amount NUMERIC(12,4) NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS withdrawals (
             id SERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL REFERENCES users(telegram_id),
@@ -999,6 +1009,47 @@ def resolve_task_reward(cur, task, user_id) -> float:
     return float(plus_reward) if is_plus else float(task["reward"])
 
 
+TASK_REWARD_HOLD_DAYS = 7
+
+
+def credit_task_reward(cur, user_id, amount):
+    """Put a task-completion reward on hold instead of crediting the
+    balance immediately — it becomes spendable after TASK_REWARD_HOLD_DAYS."""
+    cur.execute(
+        "INSERT INTO pending_task_rewards (user_id, amount) VALUES (%s, %s)",
+        (user_id, amount),
+    )
+
+
+def release_matured_task_rewards():
+    """Move task rewards that have finished their hold period into the
+    user's real balance."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT id, user_id, amount FROM pending_task_rewards
+            WHERE created_at <= NOW() - (%s || ' days')::interval
+            """,
+            (TASK_REWARD_HOLD_DAYS,),
+        )
+        rows = cur.fetchall()
+        for r in rows:
+            cur.execute(
+                "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
+                (r["amount"], r["user_id"]),
+            )
+            cur.execute("DELETE FROM pending_task_rewards WHERE id = %s", (r["id"],))
+        conn.commit()
+        cur.close()
+        conn.close()
+        if rows:
+            logger.info("Released %d matured task reward(s)", len(rows))
+    except Exception as e:
+        logger.error("release_matured_task_rewards error: %s", e)
+
+
 # ==================== FLASK API ====================
 
 _BLOCK_PROTECTED_ROUTES = {
@@ -1038,6 +1089,14 @@ def enforce_block_on_api():
     except Exception:
         pass
     return None
+
+
+def get_held_balance(cur, user_id) -> float:
+    cur.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM pending_task_rewards WHERE user_id = %s",
+        (user_id,),
+    )
+    return float(cur.fetchone()["total"])
 
 
 @app.route("/")
@@ -1106,6 +1165,7 @@ def register_user():
             result["premium_until"] = result["premium_until"].isoformat()
         if result.get("created_at"):
             result["created_at"] = result["created_at"].isoformat()
+        result["held_balance"] = get_held_balance(cur, telegram_id)
         cur.close()
         conn.close()
         return jsonify(result)
@@ -1121,11 +1181,15 @@ def get_user(user_id):
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT * FROM users WHERE telegram_id = %s", (user_id,))
         user = cur.fetchone()
+        if not user:
+            cur.close()
+            conn.close()
+            return jsonify({"error": "not found"}), 404
+        result = dict(user)
+        result["held_balance"] = get_held_balance(cur, user_id)
         cur.close()
         conn.close()
-        if not user:
-            return jsonify({"error": "not found"}), 404
-        return jsonify(dict(user))
+        return jsonify(result)
     except Exception as e:
         logger.error("get_user error: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -2318,10 +2382,7 @@ def check_subscription():
             (user_id, task_id),
         )
         earned = resolve_task_reward(cur, task, user_id)
-        cur.execute(
-            "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
-            (earned, user_id),
-        )
+        credit_task_reward(cur, user_id, earned)
         give_referral_bonus(cur, user_id, earned)
         conn.commit()
         cur.close()
@@ -2712,10 +2773,7 @@ def cpa_postback(task_id):
         inserted = cur.fetchone()
         if inserted:
             earned = resolve_task_reward(cur, task, user_id)
-            cur.execute(
-                "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
-                (earned, user_id),
-            )
+            credit_task_reward(cur, user_id, earned)
             give_referral_bonus(cur, user_id, earned)
         conn.commit()
         cur.close()
@@ -2837,7 +2895,8 @@ def richads_claim():
             return jsonify({"error": "invalid_or_expired_nonce"}), 403
 
         reward = AD_WATCH_REWARD
-        if row["task_id"] is not None:
+        is_task_reward = row["task_id"] is not None
+        if is_task_reward:
             cur.execute(
                 "SELECT reward, plus_reward FROM tasks WHERE id = %s AND task_type = 'richads'",
                 (row["task_id"],),
@@ -2849,10 +2908,13 @@ def richads_claim():
                 return jsonify({"error": "task not found"}), 404
             reward = resolve_task_reward(cur, task, user_id)
 
-        cur.execute(
-            "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
-            (reward, user_id),
-        )
+        if is_task_reward:
+            credit_task_reward(cur, user_id, reward)
+        else:
+            cur.execute(
+                "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
+                (reward, user_id),
+            )
         give_referral_bonus(cur, user_id, reward)
         conn.commit()
         cur.close()
@@ -3138,7 +3200,8 @@ def admin_users():
                     """
                     SELECT telegram_id, username, first_name, nick, balance,
                            referral_count, event_referral_count, status, created_at,
-                           is_blocked, block_reason, premium_until
+                           is_blocked, block_reason, premium_until,
+                           (SELECT COALESCE(SUM(amount), 0) FROM pending_task_rewards WHERE user_id = users.telegram_id) AS held_balance
                     FROM users WHERE telegram_id = %s LIMIT 20
                 """,
                     (tid,),
@@ -3148,7 +3211,8 @@ def admin_users():
                     """
                     SELECT telegram_id, username, first_name, nick, balance,
                            referral_count, event_referral_count, status, created_at,
-                           is_blocked, block_reason, premium_until
+                           is_blocked, block_reason, premium_until,
+                           (SELECT COALESCE(SUM(amount), 0) FROM pending_task_rewards WHERE user_id = users.telegram_id) AS held_balance
                     FROM users
                     WHERE username ILIKE %s OR first_name ILIKE %s OR nick ILIKE %s
                     ORDER BY balance DESC LIMIT 20
@@ -3159,7 +3223,8 @@ def admin_users():
             cur.execute("""
                 SELECT telegram_id, username, first_name, nick, balance,
                        referral_count, event_referral_count, status, created_at,
-                       is_blocked, block_reason, premium_until
+                       is_blocked, block_reason, premium_until,
+                       (SELECT COALESCE(SUM(amount), 0) FROM pending_task_rewards WHERE user_id = users.telegram_id) AS held_balance
                 FROM users ORDER BY balance DESC
             """)
         users = [dict(u) for u in cur.fetchall()]
@@ -3265,6 +3330,7 @@ def admin_edit_user():
     if not target_id:
         return jsonify({"error": "missing user_id"}), 400
     balance = data.get("balance")
+    held_balance = data.get("held_balance")
     referral_count = data.get("referral_count")
     event_referral_count = data.get("event_referral_count")
     status = data.get("status")
@@ -3326,24 +3392,53 @@ def admin_edit_user():
             elif st != "Premium":
                 # Clear premium_until if not premium
                 fields.append("premium_until = NULL")
-        if not fields:
+
+        held_balance_changed = False
+        if held_balance is not None:
+            try:
+                hb = float(held_balance)
+                if hb < 0:
+                    hb = 0
+                held_balance_changed = True
+            except (TypeError, ValueError):
+                pass
+
+        if not fields and not held_balance_changed:
             cur.close()
             conn.close()
             return jsonify({"error": "no fields to update"}), 400
-        values.append(target_id)
-        cur.execute(
-            f"UPDATE users SET {', '.join(fields)} WHERE telegram_id = %s RETURNING *",
-            values,
-        )
-        updated = cur.fetchone()
+
+        if fields:
+            values.append(target_id)
+            cur.execute(
+                f"UPDATE users SET {', '.join(fields)} WHERE telegram_id = %s RETURNING *",
+                values,
+            )
+            updated = cur.fetchone()
+        else:
+            updated = user
+
+        if held_balance_changed:
+            current_held = get_held_balance(cur, target_id)
+            delta = round(hb - current_held, 4)
+            if delta != 0:
+                # Record the adjustment as a fresh pending reward (or a
+                # negative one to reduce it) — keeps a single source of
+                # truth (pending_task_rewards) instead of a separate column.
+                cur.execute(
+                    "INSERT INTO pending_task_rewards (user_id, amount) VALUES (%s, %s)",
+                    (target_id, delta),
+                )
+
         conn.commit()
-        cur.close()
-        conn.close()
         result = dict(updated)
         if result.get("created_at"):
             result["created_at"] = result["created_at"].isoformat()
         if result.get("premium_until"):
             result["premium_until"] = result["premium_until"].isoformat()
+        result["held_balance"] = get_held_balance(cur, target_id)
+        cur.close()
+        conn.close()
         return jsonify({"ok": True, "user": result})
     except Exception as e:
         logger.error("admin_edit_user error: %s", e)
@@ -4329,10 +4424,7 @@ def admin_approve_task_completion(completion_id):
             (admin_id, completion_id),
         )
         earned = resolve_task_reward(cur, row, row["user_id"])
-        cur.execute(
-            "UPDATE users SET balance = balance + %s WHERE telegram_id = %s",
-            (earned, row["user_id"]),
-        )
+        credit_task_reward(cur, row["user_id"], earned)
         give_referral_bonus(cur, row["user_id"], earned)
         conn.commit()
         cur.close()
